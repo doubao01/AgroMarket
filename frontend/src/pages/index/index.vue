@@ -1,6 +1,11 @@
 <template>
   <view class="page">
     <view class="hero">
+      <view class="hero-loc" @tap="showRegion = true">
+        <text class="hero-loc-icon">📍</text>
+        <text class="hero-loc-name">{{ townLabel }}</text>
+        <text class="hero-loc-arrow">▾</text>
+      </view>
       <view class="hero-title">息县农贸通</view>
       <view class="hero-sub">豫南粮仓 · 农产品自由交易</view>
       <view class="hero-search" @tap="goMarket">
@@ -80,24 +85,66 @@
         <view class="mt8 muted">{{ d.quantity }}{{ d.unit }} · {{ d.townName || '息县' }}</view>
       </view>
     </view>
+
+    <region-picker
+      :visible.sync="showRegion"
+      allow-all
+      :townId.sync="townId"
+      :villageId.sync="villageId"
+      @town-change="onTownChange"
+      @village-change="onVillageChange"
+    />
   </view>
 </template>
 
 <script>
 import { supplyApi, demandApi, noticeApi } from '../../api/index'
+import RegionPicker from '../../components/region-picker.vue'
+import { getLocation, setLocation, getTownLabel } from '../../utils/location'
 
 export default {
+  components: { RegionPicker },
   data() {
-    return { supplies: [], demands: [], notices: [], loadingSupplies: false, loadingDemands: false }
+    return {
+      supplies: [], demands: [], notices: [],
+      loadingSupplies: false, loadingDemands: false,
+      showRegion: false,
+      townId: null, villageId: null, townLabel: '全部乡镇',
+    }
   },
-  onShow() { this.load() },
+  onShow() { this.syncLocation(); this.load() },
   methods: {
+    syncLocation() {
+      const loc = getLocation()
+      this.townId = loc ? loc.townId : null
+      this.villageId = loc ? (loc.villageId || null) : null
+      this.townLabel = getTownLabel(loc)
+    },
+    onTownChange(e) {
+      this.townLabel = e.townName || '全部乡镇'
+      this.villageId = null
+      this.persist()
+    },
+    onVillageChange(e) {
+      this.villageId = e.villageId || null
+      this.persist()
+    },
+    persist() {
+      setLocation({ countyId: 3, townId: this.townId, townName: this.townLabel === '全部乡镇' ? '' : this.townLabel, villageId: this.villageId, villageName: '' })
+      this.load()
+    },
+    listQuery(page, pageSize) {
+      const q = { page, pageSize }
+      if (this.townId) { q.townId = this.townId; q.townIncludeVillages = true }
+      if (this.villageId) q.villageId = this.villageId
+      return q
+    },
     async load() {
       this.loadingSupplies = true
       this.loadingDemands = true
-      try { this.supplies = (await supplyApi.list({ page: 1, pageSize: 5 })).items || [] } catch (e) {}
+      try { this.supplies = (await supplyApi.list(this.listQuery(1, 5))).items || [] } catch (e) {}
       this.loadingSupplies = false
-      try { this.demands = (await demandApi.list({ page: 1, pageSize: 4 })).items || [] } catch (e) {}
+      try { this.demands = (await demandApi.list(this.listQuery(1, 4))).items || [] } catch (e) {}
       this.loadingDemands = false
       try { this.notices = (await noticeApi.list()) || [] } catch (e) {}
     },
@@ -113,6 +160,25 @@ export default {
   padding: 40rpx 32rpx 80rpx;
   color: #fff;
 }
+.hero-loc {
+  display: inline-flex;
+  align-items: center;
+  max-width: 60%;
+  margin-bottom: 20rpx;
+  padding: 8rpx 20rpx;
+  border-radius: 999rpx;
+  background: rgba(255, 255, 255, 0.18);
+}
+.hero-loc-icon { font-size: 26rpx; margin-right: 8rpx; }
+.hero-loc-name {
+  font-size: 28rpx;
+  font-weight: 600;
+  max-width: 320rpx;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.hero-loc-arrow { font-size: 24rpx; margin-left: 8rpx; opacity: 0.9; }
 .hero-title { font-size: 48rpx; font-weight: 700; }
 .hero-sub { font-size: 26rpx; opacity: 0.9; margin-top: 8rpx; }
 .hero-search {
