@@ -93,9 +93,9 @@
     </view>
 
     <region-picker
-      :visible.sync="showRegion"
-      :townId.sync="form.townId"
-      :villageId.sync="form.villageId"
+      v-model:visible="showRegion"
+      v-model:townId="form.townId"
+      v-model:villageId="form.villageId"
       @town-change="onTownChange"
       @village-change="onVillageChange"
     />
