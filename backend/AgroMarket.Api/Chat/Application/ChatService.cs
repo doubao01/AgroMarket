@@ -125,6 +125,38 @@ public class ChatService
         };
     }
 
+    /// <summary>
+    /// 消息搜索。conversationId 为空时全局搜索(在用户参与的会话中按关键词匹配, 返回命中会话+消息);
+    /// 指定 conversationId 时仅在该会话内搜索(先校验成员)。
+    /// </summary>
+    public async Task<List<ChatSearchResultDto>> SearchAsync(long userId, string keyword, long? conversationId, int limit)
+    {
+        if (string.IsNullOrWhiteSpace(keyword))
+            throw new BizException("请输入搜索关键词");
+        keyword = keyword.Trim();
+        if (keyword.Length > 50) keyword = keyword[..50];
+        if (limit is < 1 or > 50) limit = 20;
+
+        if (conversationId is > 0)
+        {
+            await EnsureParticipantAsync(conversationId.Value, userId);
+            var rows = await _repo.SearchMessagesAsync(conversationId.Value, keyword, limit);
+            var conv = await _repo.GetConversationForUserAsync(conversationId.Value, userId);
+            return rows.Select(r => new ChatSearchResultDto
+            {
+                Conversation = conv ?? new ChatConversationDto { Id = conversationId.Value },
+                Message = MapMessage(r),
+            }).ToList();
+        }
+
+        var hits = await _repo.SearchConversationsByMessageAsync(userId, keyword, limit);
+        return hits.Select(h => new ChatSearchResultDto
+        {
+            Conversation = ChatRepository.MapConversation(h.Conv),
+            Message = MapMessage(h.Msg),
+        }).ToList();
+    }
+
     public async Task MarkReadAsync(long userId, long convId, long lastReadMessageId)
     {
         await EnsureParticipantAsync(convId, userId);

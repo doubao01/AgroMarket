@@ -94,6 +94,13 @@ public class ChatController : ControllerBase
         return Ok(ApiResponse<object>.Ok(null, "已撤回"));
     }
 
+    /// <summary>消息搜索。conversationId 为空时全局搜索, 指定时仅在该会话内搜索。</summary>
+    [HttpGet("search")]
+    public async Task<ActionResult<ApiResponse<List<ChatSearchResultDto>>>> Search(
+        [FromQuery] string keyword, [FromQuery] long? conversationId, [FromQuery] int limit = 20)
+        => Ok(ApiResponse<List<ChatSearchResultDto>>.Ok(
+            await _chat.SearchAsync(HttpContext.User().Id, keyword, conversationId, limit)));
+
     /// <summary>未读消息总数。</summary>
     [HttpGet("unread")]
     public async Task<ActionResult<ApiResponse<long>>> Unread()
