@@ -34,7 +34,7 @@
 
 ```bash
 cd database
-# 创建库、账号、执行结构(01)、种子数据(02)、聊天模块(03)与聊天增强(04)迁移（可重复执行）
+# 创建库、账号、执行结构(01)、种子数据(02)、聊天模块(03)、聊天增强(04)与 AI 对话(05)迁移（可重复执行）
 bash init-db.sh
 ```
 
@@ -149,7 +149,7 @@ dotnet run --project AgroMarket.Tests
 
 - 数据大屏：管理员访问 `pages/dashboard/index.vue`（`/api/admin/dashboard/*`），展示总览指标、成交趋势、品类供需、乡镇分布、用户结构、消息活跃；真实成交口径与后台统计一致。入口在"管理后台"页。
 - AI 能力（OpenAI 兼容 LLM，可对接 DeepSeek/通义/智谱）：
-  - 智能客服/农事助手：`pages/ai/assistant.vue`（"我的"页入口），后端 `/api/ai/chat`，可实时查询平台供需与订单（只读工具）。
+  - 智能客服/农事助手：`pages/ai/assistant.vue`（"我的"页入口），后端 `/api/ai/chat`，可实时查询平台供需与订单（只读工具）；对话历史持久化，支持多会话列表、续聊、重命名与删除（`/api/ai/conversations*`）。
   - 内容发布辅助：供应/采购发布页"AI 帮我写"按钮，`/api/ai/assist/publish` 生成描述/分类/价格区间，仅预填表单。
   - 大屏智能解读：大屏页 `AI 数据解读` 卡片，`/api/ai/insight` 自动生成结论、`/api/ai/ask` 对数据提问。
 - **配置**：LLM 通过 `Ai:*`（`BaseUrl`/`Model`/`ApiKey`）配置，Key 可用环境变量 `Ai__ApiKey` 覆盖，代码不硬编码；未配置时 AI 接口返回 `501`，不影响业务。

@@ -49,9 +49,9 @@ This file records user instructions, preferences, and teachings for reference in
 - Context: Discovered by Agent while adding the chat module migration
 - Category: Operations & Deployment
 - Instructions:
-  - 数据库脚本按序执行：`database/01_schema.sql`（结构）→ `02_seed.sql`（种子）→ `03_chat.sql`（聊天模块增量迁移，含 6 张 chat_* 表 + trade_quote 扩展列）→ `04_chat_wechat.sql`（微信式增强：chat_message 增 `reply_to_message_id`/`recalled_at`，chat_participant 增 `last_delivered_message_id`），`database/init-db.sh` 已串联四者且可重复执行。
-  - 对已在运行的库应用新增迁移，直接 `mysql -uagromarket -pagromarket_dev_2026 agro_market < database/0X_xxx.sql` 即可（脚本用 `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS`，幂等）。
-  - 本机 MySQL/MariaDB 客户端为 `mysql`（非 `mariadb`），本地账号 `agromarket` / `agromarket_dev_2026`。
+  - 数据库脚本按序执行：`database/01_schema.sql`（结构）→ `02_seed.sql`（种子）→ `03_chat.sql`（聊天模块增量迁移，含 6 张 chat_* 表 + trade_quote 扩展列）→ `04_chat_wechat.sql`（微信式增强：chat_message 增 `reply_to_message_id`/`recalled_at`，chat_participant 增 `last_delivered_message_id`）→ `05_ai_chat.sql`（AI 对话持久化：`ai_conversation`/`ai_message`），`database/init-db.sh` 已串联五者且可重复执行。
+  - 对已在运行的库应用新增迁移：用应用账号 `mysql -uagromarket -pagromarket_dev_2026 agro_market < database/0X_xxx.sql`（脚本用 `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS`，幂等）。若需要 DDL 权限，用本地 socket 的 root：`mysql -uroot < ...`（**不要带 `-h127.0.0.1`**，root 走 unix_socket 认证，带 `-h` 会 Access denied）。
+  - 本机同时有 `mysql` 与 `mariadb` 两个客户端；本地应用账号 `agromarket` / `agromarket_dev_2026`，root 走本地 socket 免密。
   - 后端启动依赖开发配置：`ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS=http://127.0.0.1:8080 dotnet run --no-build`（连接串/JWT 在 appsettings.Development.json）。
 
 [Project Knowledge Summary]

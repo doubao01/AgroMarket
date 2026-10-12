@@ -228,7 +228,7 @@ frontend/src/
 
 - 新增 NuGet：无必须项（用 `System.Net.Http.Json` 手写 OpenAI 兼容协议即可）；可选 `Microsoft.Extensions.Http`（含于框架）。
 - 新增前端依赖：`@qiun/ucharts`。
-- 数据库：**无需改表**（若需存 AI 对话历史，后续加 `ai_chat_message` 表，本期省略）。
+- 数据库：原计划存 AI 对话历史，已实现（`05_ai_chat.sql`：`ai_conversation` / `ai_message`）。
 
 ## 十、实施计划（建议分期）
 
@@ -247,7 +247,7 @@ frontend/src/
 ## 十一、未决问题
 
 1. LLM 供应商最终选定？（默认 DeepSeek，OpenAI 兼容即可切换）
-2. AI 对话历史是否需要持久化（跨会话/跨设备）？本期默认内存临时。
+2. AI 对话历史持久化（跨会话/跨设备）：已实现，见 `ai_conversation` / `ai_message` 与会话管理端点。
 3. 大屏是否需要投屏大字体/暗色主题？（本期先做移动优先亮色，后续可加主题）
 4. 频控阈值与输入长度上限的具体数值。
 ```

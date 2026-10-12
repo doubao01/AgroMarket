@@ -51,6 +51,7 @@ builder.Services.AddHttpContextAccessor();
 builder.Services.Configure<AgroMarket.Api.Ai.Infrastructure.AiOptions>(
     builder.Configuration.GetSection(AgroMarket.Api.Ai.Infrastructure.AiOptions.SectionName));
 builder.Services.AddHttpClient<AgroMarket.Api.Ai.Infrastructure.ILlmClient, AgroMarket.Api.Ai.Infrastructure.OpenAiCompatClient>();
+builder.Services.AddScoped<AgroMarket.Api.Ai.Infrastructure.AiChatRepository>();
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Tools.IAiTool, AgroMarket.Api.Ai.Tools.PlatformStatsTool>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Tools.IAiTool, AgroMarket.Api.Ai.Tools.TradeTrendTool>();
