@@ -61,8 +61,8 @@
       </view>
     </view>
 
-    <view class="muted" style="padding:0 8rpx 24rpx;">提交后需管理员审核通过才会在市场展示。</view>
-    <button class="btn btn-block" :disabled="submitting" @tap="submit">{{ submitting ? '提交中...' : '提交审核' }}</button>
+    <view class="muted" style="padding:0 8rpx 24rpx;">{{ editId ? '修改后将重新提交审核，审核通过前市场展示原内容。' : '提交后需管理员审核通过才会在市场展示。' }}</view>
+    <button class="btn btn-block" :disabled="submitting" @tap="submit">{{ submitting ? '提交中...' : (editId ? '保存修改' : '提交审核') }}</button>
 
     <view v-if="showCat" class="modal-mask" @tap="showCat = false">
       <view class="modal" @tap.stop>
@@ -93,6 +93,7 @@ export default {
   data() {
     return {
       categories: [], showCat: false, showRegion: false, catName: '', regionLabel: '', submitting: false, aiLoading: false,
+      editId: null,
       form: {
         title: '', categoryId: null, quantity: '', unit: '斤', priceMin: '', priceMax: '', priceUnit: '元/斤',
         specRequired: '', countyId: 3, townId: null, villageId: null, expectDate: '', packagingNote: '',
@@ -100,8 +101,37 @@ export default {
       },
     }
   },
-  onLoad() { if (!requireLogin()) return; this.loadCategories() },
+  onLoad(options) { if (!requireLogin()) return; this.loadCategories(); if (options && options.id) this.loadForEdit(Number(options.id)) },
   methods: {
+    async loadForEdit(id) {
+      this.editId = id
+      uni.setNavigationBarTitle({ title: '编辑采购' })
+      try {
+        const d = await demandApi.detail(id)
+        if (!d) return
+        const f = this.form
+        f.title = d.title
+        f.categoryId = d.categoryId
+        f.quantity = String(d.quantity)
+        f.unit = d.unit || '斤'
+        f.priceMin = d.priceMin != null ? String(d.priceMin) : ''
+        f.priceMax = d.priceMax != null ? String(d.priceMax) : ''
+        f.priceUnit = d.priceUnit || '元/斤'
+        f.specRequired = d.specRequired || ''
+        f.countyId = d.countyId || 3
+        f.townId = d.townId || null
+        f.villageId = d.villageId || null
+        f.expectDate = d.expectDate ? String(d.expectDate).slice(0, 10) : ''
+        f.packagingNote = d.packagingNote || ''
+        f.contactName = d.contactName || ''
+        f.contactPhone = d.contactPhone || ''
+        f.description = d.description || ''
+        this.catName = d.categoryName || ''
+        this.regionLabel = d.townName || ''
+      } catch (e) {
+        uni.showToast({ title: (e && e.msg) || '加载失败', icon: 'none' })
+      }
+    },
     async loadCategories() {
       try { const all = await categoryApi.all(); this.categories = (all || []).filter(c => c.parentId != null) } catch (e) {}
     },
@@ -153,8 +183,9 @@ export default {
       }
       this.submitting = true
       try {
-        await demandApi.create(payload)
-        uni.showToast({ title: '已提交，等待审核' })
+        if (this.editId) await demandApi.update(this.editId, payload)
+        else await demandApi.create(payload)
+        uni.showToast({ title: this.editId ? '已更新，等待审核' : '已提交，等待审核' })
         setTimeout(() => uni.redirectTo({ url: '/pages/user/listings' }), 800)
       } catch (e) {} finally { this.submitting = false }
     },

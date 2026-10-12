@@ -16,6 +16,7 @@
         <view class="muted mt8">{{ it.quantity }}{{ it.unit }} · {{ it.townName || '息县' }}</view>
         <view class="actions mt16">
           <text class="mini" @tap="goDetail(it.id)">查看</text>
+          <text v-if="canEdit(it.status)" class="mini" @tap="goEdit(it.id)">编辑</text>
           <text v-if="canOff(it.status)" class="mini" @tap="changeStatus(it.id, 'off_shelf')">下架</text>
           <text v-if="canOn(it.status)" class="mini" @tap="changeStatus(it.id, 're_activate')">上架</text>
           <text v-if="it.status === 'ACTIVE'" class="mini" @tap="changeStatus(it.id, 'sold_out')">售罄</text>
@@ -51,6 +52,10 @@ export default {
     goDetail(id) {
       uni.navigateTo({ url: (this.tab === 'supply' ? '/pages/supply/detail?id=' : '/pages/demand/detail?id=') + id })
     },
+    goEdit(id) {
+      uni.navigateTo({ url: (this.tab === 'supply' ? '/pages/supply/publish?id=' : '/pages/demand/publish?id=') + id })
+    },
+    canEdit(s) { return ['PENDING', 'ACTIVE', 'OFF_SHELF', 'REJECTED'].includes(s) },
     goPublish() { uni.navigateTo({ url: this.tab === 'supply' ? '/pages/supply/publish' : '/pages/demand/publish' }) },
     canOff(s) { return s === 'ACTIVE' },
     canOn(s) { return ['OFF_SHELF', 'SOLD_OUT'].includes(s) },

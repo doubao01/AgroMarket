@@ -31,6 +31,7 @@
       </view>
 
       <view v-if="!isOwner" class="report-link" @tap="report">举报该信息</view>
+      <view v-else class="report-link" @tap="goEdit">编辑我的发布</view>
     </view>
     <view class="empty" v-else>{{ loading ? '加载中...' : '信息不存在或已关闭' }}</view>
 
@@ -86,6 +87,7 @@ export default {
     },
   },
   methods: {
+    goEdit() { uni.navigateTo({ url: '/pages/demand/publish?id=' + this.item.id }) },
     async load() {
       this.loading = true
       try {
