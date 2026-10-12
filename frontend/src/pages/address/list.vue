@@ -24,7 +24,7 @@
       <button class="btn btn-block" @tap="save">保存地址</button>
     </view>
 
-    <region-picker :visible.sync="showRegion" :townId.sync="form.townId" :villageId.sync="form.villageId" @town-change="onTown" @village-change="onVillage" />
+    <region-picker v-model:visible="showRegion" v-model:townId="form.townId" v-model:villageId="form.villageId" @town-change="onTown" @village-change="onVillage" />
   </view>
 </template>
 
