@@ -1052,9 +1052,171 @@ else
     }
 }
 
+// 13. 节点联动 (数据上报 / 双向同步 / 脱敏)
+Console.WriteLine("\n== 13. 节点联动 ==");
+try
+{
+    // 13.1 节点接口必须携带节点令牌
+    var (pingNo, _) = await Call(HttpMethod.Get, "/api/federation/node/ping");
+    Check("节点接口缺少令牌返回 401", pingNo == HttpStatusCode.Unauthorized, $"status={(int)pingNo}");
+    var (pingBad, _) = await Call(HttpMethod.Get, "/api/federation/node/ping", null, "not-a-jwt");
+    Check("节点接口非法令牌返回 401", pingBad == HttpStatusCode.Unauthorized, $"status={(int)pingBad}");
+
+    // 13.2 联动管理仅管理员可读
+    var (selfS, selfB) = await Call(HttpMethod.Get, "/api/admin/federation/self", null, adminToken);
+    var selfCode = Data(selfB).TryGetProperty("nodeCode", out var nc) ? nc.GetString() : null;
+    var selfEnabled = Data(selfB).TryGetProperty("enabled", out var en) && en.GetBoolean();
+    Check("管理员可读取联动本节点信息", selfS == HttpStatusCode.OK && Code(selfB) == 0 && selfEnabled && selfCode == "node-xixian",
+        $"status={(int)selfS} nodeCode={selfCode}");
+    var (selfForbidden, _) = await Call(HttpMethod.Get, "/api/admin/federation/self", null, buyerToken);
+    Check("普通用户访问联动管理返回 403", selfForbidden == HttpStatusCode.Forbidden, $"status={(int)selfForbidden}");
+
+    // 13.3 签发节点令牌, 可作为节点身份访问节点接口
+    var (tokS, tokB) = await Call(HttpMethod.Post, "/api/admin/federation/nodes/token", new { nodeCode = "node-xixian" }, adminToken);
+    var nodeTok = Data(tokB).TryGetProperty("token", out var tk) ? tk.GetString() : null;
+    Check("管理员签发节点令牌(JWT)", tokS == HttpStatusCode.OK && !string.IsNullOrEmpty(nodeTok) && nodeTok!.Split('.').Length == 3,
+        $"len={nodeTok?.Length}");
+    var (pingOk, pingOkB) = await Call(HttpMethod.Get, "/api/federation/node/ping", null, nodeTok);
+    var peerCode = Data(pingOkB).TryGetProperty("peer", out var pc) ? pc.GetString() : null;
+    Check("合法节点令牌访问节点接口并回带身份", pingOk == HttpStatusCode.OK && peerCode == "node-xixian", $"peer={peerCode}");
+
+    // 13.4 上报接收 + 幂等 + 身份一致性
+    var batch = "itest-" + Guid.NewGuid().ToString("N")[..10];
+    object ReportPayload(string nodeCode, int orders) => new
+    {
+        nodeCode,
+        batchNo = batch,
+        periodDate = DateTime.Today.ToString("yyyy-MM-dd"),
+        generatedAt = DateTime.Now,
+        metrics = new[]
+        {
+            new
+            {
+                statDate = "2099-12-31", userCount = 0, activeUserCount = 0, newUserCount = 0,
+                supplyCount = 0, demandCount = 0, orderCount = orders, tradeAmount = 12.5m,
+                messageCount = 0, conversationCount = 0,
+            },
+        },
+        records = new[]
+        {
+            new
+            {
+                type = "ORDER", externalId = "itest-order-fixture", regionCode = "411528",
+                occurredAt = "2099-12-31T10:00:00",
+                data = new { amount = 12.5m, buyerRef = "ref_abc123", sellerRef = "ref_def456" },
+            },
+        },
+    };
+    var (rec1, rec1B) = await Call(HttpMethod.Post, "/api/federation/node/reports", ReportPayload("node-xixian", 7), nodeTok);
+    Check("节点上报接收成功", rec1 == HttpStatusCode.OK && Code(rec1B) == 0, $"status={(int)rec1}");
+    var (rec2, _) = await Call(HttpMethod.Post, "/api/federation/node/reports", ReportPayload("node-xixian", 7), nodeTok);
+    Check("重复上报同一批次仍成功(幂等)", rec2 == HttpStatusCode.OK, $"status={(int)rec2}");
+    var (recBad, recBadB) = await Call(HttpMethod.Post, "/api/federation/node/reports", ReportPayload("node-evil", 1), nodeTok);
+    Check("上报节点与令牌身份不一致返回 403", recBad == HttpStatusCode.Forbidden || Code(recBadB) == 403, $"status={(int)recBad}");
+
+    var (mS, mB) = await Call(HttpMethod.Get, "/api/admin/federation/metrics?source=node-xixian&from=2099-12-31&to=2099-12-31", null, adminToken);
+    var metrics2099 = Data(mB);
+    var metricOk = mS == HttpStatusCode.OK && metrics2099.ValueKind == JsonValueKind.Array
+        && metrics2099.GetArrayLength() == 1 && metrics2099[0].GetProperty("orderCount").GetInt64() == 7;
+    Check("重复上报后按来源+日期去重且指标不累加", metricOk,
+        $"count={(metrics2099.ValueKind == JsonValueKind.Array ? metrics2099.GetArrayLength() : -1)}");
+
+    var (rS, rB) = await Call(HttpMethod.Get, "/api/admin/federation/records?source=node-xixian&days=7&limit=200", null, adminToken);
+    var recs = Data(rB);
+    var fixtureCount = 0;
+    if (recs.ValueKind == JsonValueKind.Array)
+        foreach (var r in recs.EnumerateArray())
+            if (r.TryGetProperty("externalId", out var eid) && eid.GetString() == "itest-order-fixture") fixtureCount++;
+    Check("重复上报后按来源+类型+外部ID去重(仅 1 条)", fixtureCount == 1, $"count={fixtureCount}");
+
+    // 13.5 脱敏: 发布一条标题含手机号的供应 -> 上架 -> 推送 -> 落库标题须脱敏
+    long catId = 0, countyId = 0, townId = 0;
+    var (_, sl) = await Call(HttpMethod.Get, "/api/supplies?pageSize=1", null, sellerToken);
+    if (Data(sl).TryGetProperty("items", out var its) && its.ValueKind == JsonValueKind.Array && its.GetArrayLength() > 0)
+    {
+        var it = its[0];
+        if (it.TryGetProperty("countyId", out var cid) && cid.ValueKind == JsonValueKind.Number) countyId = cid.GetInt64();
+        if (it.TryGetProperty("townId", out var tid) && tid.ValueKind == JsonValueKind.Number) townId = tid.GetInt64();
+    }
+    var (_, catB) = await Call(HttpMethod.Get, "/api/categories", null, sellerToken);
+    if (Data(catB).ValueKind == JsonValueKind.Array)
+        foreach (var c in Data(catB).EnumerateArray())
+            if (c.TryGetProperty("parentId", out var pid) && pid.ValueKind == JsonValueKind.Number) { catId = c.GetProperty("id").GetInt64(); break; }
+
+    long maskSupplyId = 0;
+    if (catId > 0 && countyId > 0 && townId > 0)
+    {
+        var (cs, csB) = await Call(HttpMethod.Post, "/api/supplies", new
+        {
+            title = "联动脱敏13800138000小麦", categoryId = catId, description = (string?)null,
+            quantity = 10m, unit = "斤", price = 1.2m, priceUnit = "元/斤", negotiable = true,
+            minOrderQty = (decimal?)null, countyId, townId, villageId = (long?)null,
+            spec = (string?)null, harvestTime = (string?)null, deliveryMode = "BOTH",
+            contactPhone = (string?)null, tradeNote = (string?)null, effectiveDays = 30, images = (List<string>?)null,
+        }, sellerToken);
+        maskSupplyId = Data(csB).TryGetProperty("id", out var sid) ? sid.GetInt64() : 0;
+        if (maskSupplyId > 0)
+            await Call(HttpMethod.Post, $"/api/admin/supplies/{maskSupplyId}/audit/true", null, adminToken);
+        Check("创建并上架含手机号的测试供应", cs == HttpStatusCode.OK && maskSupplyId > 0, $"id={maskSupplyId}");
+    }
+    else Check("创建并上架含手机号的测试供应", false, "缺少分类或区域数据");
+
+    // 13.6 注册对端 + 推送 + 拉取
+    var (peerReg, peerB) = await Call(HttpMethod.Post, "/api/admin/federation/nodes", new
+    {
+        nodeCode = "node-itest-peer", nodeName = "集成测试对端", level = "COUNTY",
+        regionCode = (string?)null, baseUrl = baseUrl, nodeToken = (string?)null,
+        direction = "BOTH", status = "ACTIVE",
+    }, adminToken);
+    var peerId = Data(peerB).TryGetProperty("id", out var pidv) ? pidv.GetInt64() : 0;
+    Check("注册对端节点成功", peerReg == HttpStatusCode.OK && peerId > 0, $"id={peerId}");
+
+    var (pushS, pushB) = await Call(HttpMethod.Post, "/api/admin/federation/sync/push?node=node-itest-peer", null, adminToken);
+    var pushOk = pushS == HttpStatusCode.OK && Data(pushB).TryGetProperty("succeeded", out var ps) && ps.GetInt32() == 1;
+    Check("推送本节点数据到对端成功", pushOk, $"body={Msg(pushB)}");
+
+    var (pullS, pullB) = await Call(HttpMethod.Post, "/api/admin/federation/sync/pull?node=node-itest-peer", null, adminToken);
+    var pullOk = pullS == HttpStatusCode.OK && Data(pullB).TryGetProperty("succeeded", out var qs) && qs.GetInt32() == 1;
+    Check("从对端增量拉取成功", pullOk, $"body={Msg(pullB)}");
+
+    // 13.7 上报审计 / 汇聚
+    var (repS, repB) = await Call(HttpMethod.Get, "/api/admin/federation/reports?source=node-xixian", null, adminToken);
+    var repTotal = Data(repB).TryGetProperty("total", out var rt) ? rt.GetInt64() : -1;
+    Check("上报批次可审计", repS == HttpStatusCode.OK && repTotal >= 1, $"total={repTotal}");
+    var (aggS, aggB) = await Call(HttpMethod.Get, "/api/admin/federation/aggregate?range=7d", null, adminToken);
+    var aggNodes = Data(aggB).TryGetProperty("nodeCount", out var an) ? an.GetInt32() : -1;
+    Check("跨节点汇聚返回结果", aggS == HttpStatusCode.OK && Code(aggB) == 0 && aggNodes >= 1, $"nodeCount={aggNodes}");
+
+    // 13.8 脱敏校验: 落库明细标题已去手机号, 全部明细无原始手机号
+    var (mrS, mrB) = await Call(HttpMethod.Get, "/api/admin/federation/records?source=node-xixian&type=SUPPLY&days=7&limit=200", null, adminToken);
+    var maskedTitle = "";
+    var anyRawPhone = false;
+    if (Data(mrB).ValueKind == JsonValueKind.Array)
+        foreach (var r in Data(mrB).EnumerateArray())
+        {
+            var raw = r.TryGetProperty("data", out var dd) ? dd.GetRawText() : "";
+            if (raw.Contains("13800138000")) anyRawPhone = true;
+            if (r.TryGetProperty("data", out var dd2) && dd2.TryGetProperty("title", out var ttl))
+            {
+                var ts = ttl.GetString() ?? "";
+                if (ts.Contains("联动脱敏")) { maskedTitle = ts; if (raw.Contains("13800138000")) anyRawPhone = true; }
+            }
+        }
+    Check("推送的供应标题已脱敏(手机号被打码)", maskedTitle.Contains("联动脱敏") && maskedTitle.Contains("****") && !maskedTitle.Contains("13800138000"),
+        $"title={maskedTitle}");
+    Check("落库业务明细不含原始手机号", !anyRawPhone);
+
+    // 清理: 移除测试对端节点
+    if (peerId > 0) await Call(HttpMethod.Delete, $"/api/admin/federation/nodes/{peerId}", null, adminToken);
+    if (maskSupplyId > 0) await Call(HttpMethod.Post, $"/api/supplies/{maskSupplyId}/status/off_shelf", null, sellerToken);
+}
+catch (Exception ex)
+{
+    Check("节点联动流程", false, ex.Message);
+}
+
 Console.WriteLine($"\n结果: {passed} 通过, {failed} 失败");
 return failed == 0 ? 0 : 1;
-
 // ---------- 内置 Mock OpenAI 兼容服务 ----------
 public class MockLlmServer
 {

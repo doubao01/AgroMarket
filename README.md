@@ -34,7 +34,7 @@
 
 ```bash
 cd database
-# 创建库、账号、执行结构(01)、种子数据(02)、聊天模块(03)、聊天增强(04)、AI 对话(05)与聊天维护(06)迁移（可重复执行）
+# 创建库、账号、执行结构(01)、种子数据(02)、聊天模块(03)、聊天增强(04)、AI 对话(05)、聊天维护(06)与节点联动(07)迁移（可重复执行）
 bash init-db.sh
 ```
 
@@ -156,6 +156,17 @@ dotnet run --project AgroMarket.Tests
   - 大屏智能解读：大屏页 `AI 数据解读` 卡片，`/api/ai/insight` 自动生成结论、`/api/ai/ask` 对数据提问。
 - **配置**：LLM 通过 `Ai:*`（`BaseUrl`/`Model`/`ApiKey`）配置，Key 可用环境变量 `Ai__ApiKey` 覆盖，代码不硬编码；未配置时 AI 接口返回 `501`，不影响业务。
 - 设计文档：`当前工作区/.monkeycode/docs/ai-dashboard-design.md`。
+
+## 多节点联动（数据上报 / 同步）
+
+面向"多个县域 + 省级"扁平节点，提供业务数据上报与双向同步能力（管理员后台 `pages/admin/federation.vue`，后端 `AgroMarket.Api/Federation/`）。
+
+- **拓扑**：扁平多节点（省/市/县对等），各节点通过 `appsettings` 的 `Federation:*` 配置自身身份，在后台登记对端。
+- **鉴权**：节点间用 JWT 节点令牌（`Federation:SharedKey` HS256 签发，`issuer/audience=AgroMarketFederation`，与用户登录 JWT 隔离）。请求头 `Authorization: Bearer <token>` 或 `X-Node-Token`。
+- **上报内容**：按天汇总指标（用户/供需/订单/成交额/消息）+ 脱敏业务明细（供应/需求/真实成交订单）。真实成交口径与数据大屏一致；明细不含手机号等身份信息（`PiiMasker` 脱敏，订单买卖双方为不可逆假名）。
+- **同步方式**：手动（后台"立即推送/拉取"）或定时（`Federation:AutoSync` + `SyncIntervalMinutes`，后台 `FederationSyncWorker`）。推送/拉取均幂等（指标按 `来源+日期`、明细按 `来源+类型+外部ID`、批次按 `来源+批次号`）。
+- **接口**：节点间 `api/federation/node/{ping,reports,export}`；管理端 `api/admin/federation/{self,nodes,nodes/token,reports,metrics,records,aggregate,sync/push,sync/pull}`（仅管理员）。
+- **配置**：`Federation:Enabled` 开启后必须配置 `NodeCode`/`NodeName`/`SharedKey`（≥32 字节）；未配置时节点接口不可用，不影响其它业务。
 
 ## 重要说明
 

@@ -134,6 +134,23 @@ export const adminApi = {
   renameRegion: (id, name) => http.post(`/api/admin/regions/${id}/rename`, { name }, { auth: true }),
 }
 
+// 多节点联动 (数据上报 / 同步)
+export const federationApi = {
+  self: () => http.get('/api/admin/federation/self', {}, { auth: true }),
+  nodes: () => http.get('/api/admin/federation/nodes', {}, { auth: true }),
+  saveNode: (data) => http.post('/api/admin/federation/nodes', data, { auth: true }),
+  updateNode: (id, data) => http.put('/api/admin/federation/nodes/' + id, data, { auth: true }),
+  setNodeStatus: (id, status) => http.post(`/api/admin/federation/nodes/${id}/status`, { status }, { auth: true }),
+  removeNode: (id) => http.del('/api/admin/federation/nodes/' + id, {}, { auth: true }),
+  issueToken: (data) => http.post('/api/admin/federation/nodes/token', data || {}, { auth: true }),
+  reports: (query) => http.get('/api/admin/federation/reports', query || {}, { auth: true }),
+  metrics: (query) => http.get('/api/admin/federation/metrics', query || {}, { auth: true }),
+  records: (query) => http.get('/api/admin/federation/records', query || {}, { auth: true }),
+  aggregate: (range) => http.get('/api/admin/federation/aggregate', { range }, { auth: true }),
+  syncPush: (node) => http.post('/api/admin/federation/sync/push' + (node ? '?node=' + encodeURIComponent(node) : ''), {}, { auth: true }),
+  syncPull: (node) => http.post('/api/admin/federation/sync/pull' + (node ? '?node=' + encodeURIComponent(node) : ''), {}, { auth: true }),
+}
+
 export const dashboardApi = {
   overview: () => http.get('/api/admin/dashboard/overview', {}, { auth: true }),
   trend: (range) => http.get('/api/admin/dashboard/trend', { range }, { auth: true }),
