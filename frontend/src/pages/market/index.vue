@@ -52,6 +52,7 @@
 
     <region-picker
       :visible.sync="showRegion"
+      allow-all
       :townId.sync="townId"
       :villageId.sync="villageId"
       @town-change="onTownChange"
@@ -63,6 +64,7 @@
 <script>
 import { supplyApi, demandApi } from '../../api/index'
 import RegionPicker from '../../components/region-picker.vue'
+import { getLocation, setLocation, getTownLabel, sameLocation } from '../../utils/location'
 
 export default {
   components: { RegionPicker },
@@ -84,7 +86,20 @@ export default {
   },
   onLoad(query) {
     if (query.tab === 'demand') this.tab = 'demand'
+    const loc = getLocation()
+    this.townId = loc ? loc.townId : null
+    this.villageId = loc ? (loc.villageId || null) : null
+    this.townLabel = getTownLabel(loc)
     this.reload()
+  },
+  onShow() {
+    const loc = getLocation()
+    if (!sameLocation(loc, { townId: this.townId, villageId: this.villageId })) {
+      this.townId = loc ? loc.townId : null
+      this.villageId = loc ? (loc.villageId || null) : null
+      this.townLabel = getTownLabel(loc)
+      this.reload()
+    }
   },
   onPullDownRefresh() {
     this.reload().finally(() => uni.stopPullDownRefresh())
@@ -100,10 +115,23 @@ export default {
       this.reload()
     },
     onTownChange(e) {
-      this.townLabel = e.townName
+      this.townLabel = e.townName || '全部乡镇'
+      this.villageId = null
+      this.persist()
     },
     onVillageChange(e) {
-      if (e.villageId) this.reload()
+      this.villageId = e.villageId || null
+      this.persist()
+    },
+    persist() {
+      setLocation({
+        countyId: 3,
+        townId: this.townId,
+        townName: this.townLabel === '全部乡镇' ? '' : this.townLabel,
+        villageId: this.villageId,
+        villageName: '',
+      })
+      this.reload()
     },
     buildQuery() {
       const q = { page: this.page, pageSize: this.pageSize, townIncludeVillages: true }

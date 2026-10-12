@@ -86,6 +86,7 @@
 <script>
 import { demandApi, categoryApi, aiApi } from '../../api/index'
 import { requireLogin } from '../../utils/request'
+import { getLocation } from '../../utils/location'
 import RegionPicker from '../../components/region-picker.vue'
 
 export default {
@@ -101,8 +102,16 @@ export default {
       },
     }
   },
-  onLoad(options) { if (!requireLogin()) return; this.loadCategories(); if (options && options.id) this.loadForEdit(Number(options.id)) },
+  onLoad(options) { if (!requireLogin()) return; this.loadCategories(); if (options && options.id) this.loadForEdit(Number(options.id)); else this.applyLocation() },
   methods: {
+    applyLocation() {
+      const loc = getLocation()
+      if (!loc) return
+      this.form.countyId = loc.countyId || 3
+      this.form.townId = loc.townId
+      this.form.villageId = loc.villageId || null
+      this.regionLabel = loc.townName + (loc.villageName ? ' ' + loc.villageName : '')
+    },
     async loadForEdit(id) {
       this.editId = id
       uni.setNavigationBarTitle({ title: '编辑采购' })

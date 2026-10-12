@@ -8,6 +8,7 @@
       <view v-if="loading" class="rp-loading">加载中...</view>
       <view v-else class="rp-cols">
         <scroll-view scroll-y class="rp-col">
+          <view v-if="allowAll" class="rp-item" :class="{ active: !townId }" @tap="pickAll">全部乡镇</view>
           <view
             v-for="t in towns"
             :key="t.id"
@@ -42,6 +43,7 @@ export default {
     countyId: { type: [Number, String], default: 3 },
     townId: { type: [Number, String], default: null },
     villageId: { type: [Number, String], default: null },
+    allowAll: { type: Boolean, default: false },
   },
   data() {
     return {
@@ -79,6 +81,13 @@ export default {
       this.$emit('update:villageId', null)
       this.$emit('town-change', { countyId: this.countyId, townId: t.id, townName: t.name })
       await this.loadVillages(t.id)
+    },
+    pickAll() {
+      this.villages = []
+      this.$emit('update:townId', null)
+      this.$emit('update:villageId', null)
+      this.$emit('town-change', { countyId: this.countyId, townId: null, townName: '' })
+      this.close()
     },
     pickVillage(v) {
       this.$emit('update:villageId', v ? v.id : null)
