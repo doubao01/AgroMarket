@@ -123,3 +123,18 @@ This file records user instructions, preferences, and teachings for reference in
   - **Dapper/MySqlConnector 坑**：`DateOnly` 不能作为参数值（`NotSupportedException: The member from of type System.DateOnly cannot be used as a parameter value`），一律用 `DateTime`。
   - 集成测试 `backend/AgroMarket.Tests/Program.cs` 第 13 段覆盖联动（共 143 断言）：节点令牌鉴权、上报幂等、身份不一致 403、推/拉、批次审计、跨节点汇聚、脱敏（先发布标题含手机号的供应并经管理员审核上架→推送→校验落库标题已打码）。**拉/推测试用"自身实例当对端"**（注册 `baseUrl` 指向 `http://127.0.0.1:8080` 的对端节点）即可，无需第二个进程；测试末尾删除该对端节点并下架测试供应。
   - 前端管理后台联动页：`frontend/src/pages/admin/federation.vue`（路由 `pages/admin/federation`，入口在 `pages/admin/index.vue`），API 在 `frontend/src/api/index.js` 的 `federationApi`。
+
+[Project Knowledge Summary]
+- Date: 2026-10-12
+- Context: Discovered by Agent while designing multi-level (province/city/county) packaging/deployment and a two-instance live demo for federation
+- Category: Operations & Deployment / Troubleshooting & Debugging
+- Instructions:
+  - **部署资产**：`docker-compose.cluster.yml`（多级节点集群，默认 1 省 + 2 县 = 每节点一套独立 `{MySQL + API}`，节点间用网内服务名互访）+ `.env.cluster.example`（集群环境变量模板）。每节点 `db-*` 自带 healthcheck，`api-*` `depends_on` 其 `service_healthy`；`federation-bootstrap` 是一次性引导容器（`restart:"no"`）。
+  - **旧 compose 的迁移漏挂 bug（已修）**：`docker-compose.yml` 原先只把 `01_schema.sql`/`02_seed.sql` 挂到 `docker-entrypoint-initdb.d`，全新库会缺 chat/ai/federation 表。现改为挂载 `./database:/migrations:ro` + `./database/docker-init.sh:/docker-entrypoint-initdb.d/00-migrate.sh:ro`，由 `docker-init.sh` 遍历 `/migrations/0*.sql` 依次执行（全量 7 步；迁移后约 31 张表）。`docker-init.sh` 用 `mysql -uroot`（官方镜像），`init-db.sh` 用 `mariadb`（宿主机）。
+  - **库名不可改而共享实例**：所有迁移 SQL 内写死 `USE agro_market`，故同一 MySQL 实例上不能跑两个节点；多节点必须各用独立 MySQL 实例（不同容器/端口），靠 `Federation:NodeCode` 区分身份。本机两实例演示用 `sed "s/agro_market/<db>/g"` 生成独立库。
+  - **引导脚本** `scripts/federation-bootstrap.sh`：环境变量 `FED_ALL="code|baseUrl|level|name|region;..."`，逐节点登录管理员后把"除自己外"的节点 POST 到 `api/admin/federation/nodes`（`direction=BOTH,status=ACTIVE`，`nodeToken` 留空→用 `IssueSelf()` 本节点令牌），再触发 `sync/pull`+`sync/push`；幂等可重复跑。`baseUrl` 必须是**从执行环境可达**的地址（容器内用服务名，本机用 `127.0.0.1:port`）。
+  - **POSIX sh 坑**：`printf '%s' "$X" | tr ';' '\n' | while read` 会**丢掉最后一条**——`printf '%s'` 不带结尾换行，`read` 在 EOF 无分隔符时返回非零，`while read` 直接结束。必须用 `printf '%s\n'`（本次正是因此只处理了 2 个节点中的第 1 个）。外层 while 从管道进入子 shell，`set -e` 下 `[ ] && continue` 的假分支不会触发退出，但换行问题是真因。
+  - **aggregate 语义**：`fed_daily_metric` 只存**接收到的对端批次**，本节点自身指标不落该表；因此 `nodeCount` ≠ 参与节点总数，而是"有数据的来源节点数（不含自己）"。演示断言应校验对端 `sourceNodeCode` 出现在 `byNode` 里，而非 `nodeCount>=2`。
+  - **本机两实例演示** `scripts/federation-demo.sh`：用 root socket（`mysql -uroot`）重建 `agro_market_demo_a`/`_b`（sed 替换库名跑全量迁移），在 8090/8091 各起一个 `dotnet <dll>`（Development，env 注入 `ConnectionStrings__Default` 与 `Federation__*`），跑 bootstrap 后验证双向汇聚。用法 `sh scripts/federation-demo.sh [run|stop|verify]`。**注意**：dotnet 子进程会随宿主（后台终端）退出被回收；`stop` 只按记录的 PID kill，`pkill -f AgroMarket.Api.dll` 已移除（避免误伤 8080 开发实例）。演示库与 8080 开发实例（`agro_market`）互不影响。
+  - 前端联动页对端节点按层级分组：`federation.vue` 的 `nodeGroups` computed（`PROVINCE`/`CITY`/`COUNTY` + 兜底 `OTHER`，空组过滤）+ `.group-title` 样式。
+  - 文档：`.monkeycode/docs/federation-design.md`（设计）、`.monkeycode/docs/federation-deploy.md`（部署手册，含配置表/迁移/手工与容器部署/扩容/排障对照表）。
