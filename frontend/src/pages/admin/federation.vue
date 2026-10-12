@@ -25,24 +25,30 @@
     <!-- 对端节点 -->
     <view v-if="tab === 'node'" class="container">
       <view v-if="!nodes.length" class="empty">暂无对端节点</view>
-      <view v-for="n in nodes" :key="n.id" class="card">
-        <view class="between">
-          <text class="card-title">{{ n.nodeName }}</text>
-          <text class="tag" :class="{ danger: n.status !== 'ACTIVE' }">{{ n.status === 'ACTIVE' ? '启用' : '停用' }}</text>
+      <template v-for="g in nodeGroups" :key="g.key">
+        <view class="group-title">
+          <text>{{ g.label }}</text>
+          <text class="muted">{{ g.items.length }} 个</text>
         </view>
-        <view class="muted mt8">{{ n.nodeCode }} · {{ levelText(n.level) }}<text v-if="n.regionCode"> · {{ n.regionCode }}</text> · {{ dirText(n.direction) }}</view>
-        <view class="muted mt8">{{ n.baseUrl }}</view>
-        <view class="muted mt8">令牌：{{ n.hasToken ? '已配置' : '使用本节点令牌(自动)' }}</view>
-        <view class="muted mt8">推送 {{ fmt(n.lastPushAt) || '—' }} · 拉取 {{ fmt(n.lastPullAt) || '—' }}</view>
-        <view v-if="n.lastError" class="error mt8">{{ n.lastError }}</view>
-        <view class="actions mt16">
-          <text class="mini" @tap="pushOne(n)">推送</text>
-          <text class="mini" @tap="pullOne(n)">拉取</text>
-          <text class="mini" @tap="toggleNode(n)">{{ n.status === 'ACTIVE' ? '停用' : '启用' }}</text>
-          <text class="mini" @tap="editNode(n)">编辑</text>
-          <text class="mini danger" @tap="removeNode(n)">删除</text>
+        <view v-for="n in g.items" :key="n.id" class="card">
+          <view class="between">
+            <text class="card-title">{{ n.nodeName }}</text>
+            <text class="tag" :class="{ danger: n.status !== 'ACTIVE' }">{{ n.status === 'ACTIVE' ? '启用' : '停用' }}</text>
+          </view>
+          <view class="muted mt8">{{ n.nodeCode }} · {{ levelText(n.level) }}<text v-if="n.regionCode"> · {{ n.regionCode }}</text> · {{ dirText(n.direction) }}</view>
+          <view class="muted mt8">{{ n.baseUrl }}</view>
+          <view class="muted mt8">令牌：{{ n.hasToken ? '已配置' : '使用本节点令牌(自动)' }}</view>
+          <view class="muted mt8">推送 {{ fmt(n.lastPushAt) || '—' }} · 拉取 {{ fmt(n.lastPullAt) || '—' }}</view>
+          <view v-if="n.lastError" class="error mt8">{{ n.lastError }}</view>
+          <view class="actions mt16">
+            <text class="mini" @tap="pushOne(n)">推送</text>
+            <text class="mini" @tap="pullOne(n)">拉取</text>
+            <text class="mini" @tap="toggleNode(n)">{{ n.status === 'ACTIVE' ? '停用' : '启用' }}</text>
+            <text class="mini" @tap="editNode(n)">编辑</text>
+            <text class="mini danger" @tap="removeNode(n)">删除</text>
+          </view>
         </view>
-      </view>
+      </template>
 
       <view class="section-title mt24">{{ editingId ? '编辑节点' : '新增对端节点' }}</view>
       <view class="card">
@@ -171,6 +177,20 @@ export default {
     }
     this.loadSelf()
     this.loadNodes()
+  },
+  computed: {
+    nodeGroups() {
+      const order = [
+        { key: 'PROVINCE', label: '省级节点' },
+        { key: 'CITY', label: '市级节点' },
+        { key: 'COUNTY', label: '县级节点' },
+      ]
+      const known = new Set(order.map(o => o.key))
+      const groups = order.map(o => ({ ...o, items: this.nodes.filter(n => n.level === o.key) }))
+      const other = this.nodes.filter(n => !known.has(n.level))
+      if (other.length) groups.push({ key: 'OTHER', label: '其它节点', items: other })
+      return groups.filter(g => g.items.length)
+    },
   },
   methods: {
     switchTab(t) {
@@ -320,6 +340,7 @@ export default {
 .search-bar { display: flex; align-items: center; justify-content: space-between; }
 .tag.danger { color: #dd524d; border-color: #dd524d; }
 .section-title { font-size: 30rpx; font-weight: 600; }
+.group-title { display: flex; align-items: center; justify-content: space-between; font-size: 28rpx; font-weight: 600; color: #2e8b57; margin: 24rpx 0 8rpx; }
 .load-more { text-align: center; padding: 24rpx 0; }
 .error { color: #dd524d; font-size: 24rpx; }
 .token-text { width: 100%; min-height: 120rpx; font-size: 22rpx; word-break: break-all; }

@@ -182,6 +182,7 @@ AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡
 - **数据内容**：`FederationSnapshotBuilder` 生成本节点"按天汇总指标 + 脱敏业务明细"。指标口径复用 `DashboardService.RealOrderWhere`（真实成交）；明细仅结构化业务字段，自由文本经 `PiiMasker`（去手机号/身份证/邮箱），订单买卖双方为不可逆假名 `ref_xxx`。
 - **同步**：`FederationService` 负责推送/拉取/导出/接收；`FederationSyncWorker` 按 `Federation:SyncIntervalMinutes` 定时执行（`AutoSync` 控制）。对端未配置 `node_token` 时自动使用本节点令牌。全部写入幂等：指标 `来源+日期`、明细 `来源+类型+外部ID`、批次 `来源+批次号`。
 - **接收校验**：节点上报的 `payload.nodeCode` 必须与令牌身份一致，否则 403。
+- **部署**：每个节点部署一套独立 `{ MySQL + API }`（迁移 SQL 内写死 `USE agro_market`，同一 MySQL 实例不能承载两个节点）。多级集群编排见根目录 `docker-compose.cluster.yml`，引导脚本 `scripts/federation-bootstrap.sh`，完整手册见 `.monkeycode/docs/federation-deploy.md`。
 
 ## 文件上传（断点续传）
 - `POST /api/files/upload/init`：初始化分片会话，返回 `uploadId`、`chunkSize`、`totalChunks`。

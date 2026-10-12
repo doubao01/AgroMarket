@@ -18,14 +18,19 @@
 ├── database/                 # 数据库脚本（结构 + 真实区划种子数据 + 初始化脚本）
 │   ├── 01_schema.sql
 │   ├── 02_seed.sql
-│   ├── init-db.sh
+│   ├── init-db.sh            # 宿主机按序执行全部迁移
+│   ├── docker-init.sh        # 容器首启按序执行全部迁移
 │   └── 数据说明.md
 ├── backend/
 │   ├── AgroMarket.Api/       # Web API 主项目
 │   ├── AgroMarket.Tests/     # 集成冒烟测试（控制台，无外部依赖）
 │   └── README.md
 ├── frontend/                 # uni-app 前端
-└── docker-compose.yml        # 一键部署（MySQL + API）
+├── scripts/                  # 多节点联动引导/演示脚本
+│   ├── federation-bootstrap.sh
+│   └── federation-demo.sh
+├── docker-compose.yml        # 单节点部署（MySQL + API）
+└── docker-compose.cluster.yml # 多级节点集群部署（省/市/县）
 ```
 
 ## 快速开始（本地开发）
@@ -167,6 +172,9 @@ dotnet run --project AgroMarket.Tests
 - **同步方式**：手动（后台"立即推送/拉取"）或定时（`Federation:AutoSync` + `SyncIntervalMinutes`，后台 `FederationSyncWorker`）。推送/拉取均幂等（指标按 `来源+日期`、明细按 `来源+类型+外部ID`、批次按 `来源+批次号`）。
 - **接口**：节点间 `api/federation/node/{ping,reports,export}`；管理端 `api/admin/federation/{self,nodes,nodes/token,reports,metrics,records,aggregate,sync/push,sync/pull}`（仅管理员）。
 - **配置**：`Federation:Enabled` 开启后必须配置 `NodeCode`/`NodeName`/`SharedKey`（≥32 字节）；未配置时节点接口不可用，不影响其它业务。
+- **界面**：管理后台"联动"页对端节点按省 / 市 / 县分组展示；`aggregate` 只汇总**已接收到的对端数据**（本节点自身指标不落 `fed_daily_metric`，故 `nodeCount` 为"有数据的来源节点数"）。
+- **部署**：多级（省/市/县）节点集群见 `docker-compose.cluster.yml`，每节点一套独立 MySQL + API，`federation-bootstrap` 一次性完成"互相登记对端 + 首轮同步"。本机两实例快速演示：`sh scripts/federation-demo.sh`。
+- 设计文档：`当前工作区/.monkeycode/docs/federation-design.md`；部署手册：`当前工作区/.monkeycode/docs/federation-deploy.md`。
 
 ## 重要说明
 
@@ -177,6 +185,8 @@ dotnet run --project AgroMarket.Tests
 
 ## 部署
 
+单节点：
+
 ```bash
 cp .env.example .env   # 修改数据库密码与 JWT 密钥
 docker compose up -d --build
@@ -184,10 +194,24 @@ docker compose up -d --build
 
 生产环境务必配置唯一的 `Jwt__SecretKey`（≥32 字节）与数据库强密码，`Sms__DevMode` 保持关闭。
 
+多级节点集群（省 + 市 + 县，各节点独立库与 API）：
+
+```bash
+cp .env.cluster.example .env.cluster   # 填 MYSQL_*、JWT_SECRET_KEY、FEDERATION_SHARED_KEY 等
+docker compose -f docker-compose.cluster.yml --env-file .env.cluster up -d --build
+docker compose -f docker-compose.cluster.yml --env-file .env.cluster logs -f federation-bootstrap
+```
+
+- `FEDERATION_SHARED_KEY` 必须**所有节点一致**（≥32 字节）；每节点 `Federation__NodeCode/NodeName/Level/RegionCode` 各不相同。
+- 数据库首启自动按序执行 `01`–`07` 全部迁移（含联动表）。
+- 完整流程、扩容与排障见 `当前工作区/.monkeycode/docs/federation-deploy.md`。
+
 ## 文档索引
 
 - `backend/README.md`：后端结构、配置项、接口约定、已知问题
 - `database/数据说明.md`：区划数据来源、可信度标注与待补充清单
 - `当前工作区/.monkeycode/docs/chat-adr.md`：站内聊天模块架构决策（ADR）
 - `当前工作区/.monkeycode/docs/ai-dashboard-design.md`：AI 能力接入 + 数据大屏设计文档
+- `当前工作区/.monkeycode/docs/federation-design.md`：多节点联动设计文档
+- `当前工作区/.monkeycode/docs/federation-deploy.md`：多级节点部署手册
 - `/swagger`：在线接口文档（仅开发环境）
