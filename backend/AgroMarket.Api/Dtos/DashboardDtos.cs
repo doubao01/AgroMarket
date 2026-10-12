@@ -21,6 +21,7 @@ public record RegionStatDto(long TownId, string TownName, long SupplyCount, long
 
 /// <summary>用户结构一项。</summary>
 public record RoleStatDto(string Role, long Count);
+public record UserTrendPointDto(string Date, long NewUsers, long ActiveUsers);
 
 /// <summary>消息活跃一项。</summary>
 public record ChatActivityDto(string Date, long MessageCount, long ConversationCount);

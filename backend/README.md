@@ -135,6 +135,7 @@ cd backend && dotnet run --project AgroMarket.Api
 | GET | `/api/admin/dashboard/category` | 品类供需与成交额 |
 | GET | `/api/admin/dashboard/region` | 息县乡镇供需与成交额 |
 | GET | `/api/admin/dashboard/users` | 用户角色结构 |
+| GET | `/api/admin/dashboard/users/trend?range=7d/30d/90d` | 按日新增与活跃用户趋势 |
 | GET | `/api/admin/dashboard/chat?range=` | 消息活跃趋势 |
 
 ### AI 能力（OpenAI 兼容 LLM）

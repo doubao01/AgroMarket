@@ -138,6 +138,14 @@ export default {
     pickCat(c) { this.form.categoryId = c.id; this.catName = c.name; this.showCat = false },
     onTownChange(e) { this.regionLabel = e.townName; this.form.countyId = e.countyId },
     onVillageChange(e) { if (e.villageName) this.regionLabel += ' ' + e.villageName },
+    offerTitles(list) {
+      if (!list || !list.length) return
+      uni.showActionSheet({
+        itemList: list.slice(0, 3),
+        success: (r) => { this.form.title = list[r.tapIndex] },
+        fail: () => {},
+      })
+    },
     async aiAssist() {
       this.aiLoading = true
       try {
@@ -158,6 +166,7 @@ export default {
           const hit = this.categories.find(c => c.name === res.suggestedCategory)
           if (hit) this.pickCat(hit)
         }
+        this.offerTitles(res.titleSuggestions)
         uni.showToast({ title: '已生成，请检查', icon: 'none' })
       } catch (e) {
         uni.showToast({ title: (e && e.msg) || 'AI 未配置', icon: 'none' })

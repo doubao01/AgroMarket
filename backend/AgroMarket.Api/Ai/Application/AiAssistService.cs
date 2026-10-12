@@ -36,7 +36,8 @@ public class AiAssistService
             $"已知信息: 标题={req.Title ?? "无"}; 分类={req.Category ?? "无"}; 关键词={req.Keywords ?? "无"}; " +
             $"数量={req.Quantity?.ToString() ?? "无"}; 参考价={req.PriceHint?.ToString() ?? "无"}。\n" +
             "请只输出 JSON, 字段: description(80字内中文描述, 无营销夸大), suggestedCategory(品类名), " +
-            "priceMin(number, 可空), priceMax(number, 可空), priceUnit(string, 如 元/斤)。" +
+            "priceMin(number, 可空), priceMax(number, 可空), priceUnit(string, 如 元/斤), " +
+            "titleSuggestions(3个候选标题数组, 每个20字内, 含品类与数量)。" +
             "价格区间仅作参考, 无把握时 priceMin/priceMax 返回 null。";
 
         var resp = await _llm.CompleteAsync(
@@ -50,23 +51,29 @@ public class AiAssistService
     {
         var json = ExtractJson(content);
         if (json is null)
-            return new AiAssistResponse(content.Trim(), "", null, null, null);
+            return new AiAssistResponse(content.Trim(), "", null, null, null, new List<string>());
         try
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             string? GetStr(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
             decimal? GetNum(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDecimal() : null;
+            var titles = new List<string>();
+            if (root.TryGetProperty("titleSuggestions", out var t) && t.ValueKind == JsonValueKind.Array)
+                foreach (var item in t.EnumerateArray())
+                    if (item.ValueKind == JsonValueKind.String)
+                        titles.Add(item.GetString()!);
             return new AiAssistResponse(
                 GetStr("description") ?? "",
                 GetStr("suggestedCategory") ?? "",
                 GetNum("priceMin"),
                 GetNum("priceMax"),
-                GetStr("priceUnit"));
+                GetStr("priceUnit"),
+                titles);
         }
         catch
         {
-            return new AiAssistResponse(content.Trim(), "", null, null, null);
+            return new AiAssistResponse(content.Trim(), "", null, null, null, new List<string>());
         }
     }
 
