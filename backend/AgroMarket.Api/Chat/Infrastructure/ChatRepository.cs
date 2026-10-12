@@ -43,6 +43,15 @@ public class ChatConversationRow
     public string? LastMessageType { get; set; }
 }
 
+/// <summary>全局搜索的扁平行: 会话摘要 + 匹配消息。</summary>
+public class ChatSearchRow : ChatConversationRow
+{
+    public long? MatchedMessageId { get; set; }
+    public long? MatchedSenderId { get; set; }
+    public string? MatchedContent { get; set; }
+    public DateTime? MatchedCreatedAt { get; set; }
+}
+
 /// <summary>聊天数据访问 (Dapper)。读取方法自开连接; 复合写操作在仓储内使用事务。</summary>
 public class ChatRepository
 {
@@ -70,6 +79,40 @@ JOIN chat_conversation c  ON c.id = me.conversation_id
 JOIN chat_participant peer ON peer.conversation_id = c.id AND peer.user_id <> me.user_id
 JOIN sys_user u           ON u.id = peer.user_id
 LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
+
+    private const string ConversationMatchSubqueries = @"
+       (SELECT m.message_type FROM chat_message m WHERE m.id = c.last_message_id) AS LastMessageType,
+       (SELECT m.id FROM chat_message m
+          WHERE m.conversation_id=c.id AND m.status<>'RECALLED'
+            AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
+            AND m.content LIKE CONCAT('%',@kw,'%')
+          ORDER BY m.id DESC LIMIT 1) AS MatchedMessageId,
+       (SELECT m.sender_id FROM chat_message m
+          WHERE m.conversation_id=c.id AND m.status<>'RECALLED'
+            AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
+            AND m.content LIKE CONCAT('%',@kw,'%')
+          ORDER BY m.id DESC LIMIT 1) AS MatchedSenderId,
+       (SELECT m.content FROM chat_message m
+          WHERE m.conversation_id=c.id AND m.status<>'RECALLED'
+            AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
+            AND m.content LIKE CONCAT('%',@kw,'%')
+          ORDER BY m.id DESC LIMIT 1) AS MatchedContent,
+       (SELECT m.created_at FROM chat_message m
+          WHERE m.conversation_id=c.id AND m.status<>'RECALLED'
+            AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
+            AND m.content LIKE CONCAT('%',@kw,'%')
+          ORDER BY m.id DESC LIMIT 1) AS MatchedCreatedAt
+    FROM chat_participant me
+    JOIN chat_conversation c  ON c.id = me.conversation_id
+    JOIN chat_participant peer ON peer.conversation_id = c.id AND peer.user_id <> me.user_id
+    JOIN sys_user u           ON u.id = peer.user_id
+    LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id
+    WHERE me.user_id=@uid AND me.is_hidden=0
+      AND EXISTS (SELECT 1 FROM chat_message m2
+         WHERE m2.conversation_id=c.id AND m2.status<>'RECALLED'
+           AND m2.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
+           AND m2.content LIKE CONCAT('%',@kw,'%'))
+    ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
 
     // ---------------- 会话 ----------------
 
@@ -323,6 +366,49 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
         return rows.ToList();
     }
 
+    /// <summary>会话内按关键词搜索消息 (内容/商品名等文本, 排除撤回)。返回按时间降序。</summary>
+    public async Task<List<ChatMessageRow>> SearchMessagesAsync(long convId, string keyword, int limit)
+    {
+        using var conn = _db.Create();
+        var rows = await conn.QueryAsync<ChatMessageRow>(
+            MessageSelect + @" WHERE conversation_id=@c AND status<>'RECALLED'
+                 AND message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
+                 AND content LIKE CONCAT('%',@kw,'%')
+               ORDER BY id DESC LIMIT @limit",
+            new { c = convId, kw = keyword, limit });
+        return rows.ToList();
+    }
+
+    /// <summary>全局搜索: 在用户参与的会话中按关键词搜索消息, 每个会话返回最新匹配。返回 (会话行, 消息行) 列表。</summary>
+    public async Task<List<(ChatConversationRow Conv, ChatMessageRow Msg)>> SearchConversationsByMessageAsync(
+        long userId, string keyword, int limit)
+    {
+        using var conn = _db.Create();
+        var rows = await conn.QueryAsync<ChatSearchRow>(
+            "SELECT c.id AS Id, c.source_type AS SourceType, c.source_id AS SourceId, " +
+            "c.last_message_at AS LastMessageAt, " +
+            "me.unread_count AS UnreadCount, me.is_pinned AS IsPinned, me.is_muted AS IsMuted, " +
+            "u.id AS PeerId, u.nickname AS PeerNickname, u.avatar_url AS PeerAvatar, " +
+            "mp.subject_name AS SubjectName, mp.audit_status AS AuditStatus, " +
+            "(SELECT CASE WHEN m.status='RECALLED' THEN '[已撤回]' ELSE m.content END " +
+            "   FROM chat_message m WHERE m.id = c.last_message_id) AS LastContent, " +
+            ConversationMatchSubqueries,
+            new { uid = userId, kw = keyword, limit });
+
+        var results = new List<(ChatConversationRow, ChatMessageRow)>();
+        foreach (var r in rows)
+        {
+            var msg = new ChatMessageRow
+            {
+                Id = r.MatchedMessageId ?? 0, ConversationId = r.Id,
+                SenderId = r.MatchedSenderId ?? 0, Content = r.MatchedContent,
+                CreatedAt = r.MatchedCreatedAt ?? default,
+            };
+            results.Add((r, msg));
+        }
+        return results;
+    }
+
     /// <summary>标记已读: 更新 last_read_message_id 并重算未读。返回受影响行数。</summary>
     public async Task<int> MarkReadAsync(long convId, long userId, long lastReadMessageId)
     {
@@ -398,7 +484,8 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
 
     // ---------------- 映射 ----------------
 
-    private static ChatConversationDto MapConversation(ChatConversationRow r) => new()
+    /// <summary>会话行 -> DTO (供列表与搜索复用)。</summary>
+    public static ChatConversationDto MapConversation(ChatConversationRow r) => new()
     {
         Id = r.Id,
         SourceType = r.SourceType,

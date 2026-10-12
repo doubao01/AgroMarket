@@ -97,6 +97,7 @@ export const chatApi = {
   addBlock: (userId) => http.post('/api/chat/blocks', { userId }, { auth: true }),
   removeBlock: (userId) => http.del('/api/chat/blocks/' + userId, {}, { auth: true }),
   unread: () => http.get('/api/chat/unread', {}, { auth: true, showError: false }),
+  search: (keyword, conversationId, limit) => http.get('/api/chat/search', { keyword, conversationId, limit }, { auth: true }),
 }
 
 export const addressApi = {

@@ -24,6 +24,7 @@
 - 预留：通过 `IRealtimeNotifier` 抽象隔离推送实现，后续若需 SignalR/Redis 横向扩展只需替换实现。
 - 降级：小程序端若实时不稳定，按 `ChatMessage.id` 游标轮询补拉（接口与实时解耦）。
 - 落地状态（2026-10-11）：已实现 `/ws/chat`（`ChatRealtimeHub`）+ `ChatConnectionManager`（单进程内存）+ `ChatRealtimeNotifier`；握手 `?token=` 鉴权；前端 `utils/chat-socket.js`（自动重连 + 心跳），未连上时降级为 4s 轮询。spike 通过（集成测试覆盖连接/心跳/REST→WS 推送/WS 发送 ack）。
+- 消息搜索（2026-10-12）：`GET /api/chat/search`，`conversationId` 为空全局搜索（`conversation_id` 上子查询取每会话最新命中），非空会话内搜索（先校验成员）；仅匹配未撤回的 `TEXT/PRODUCT_CARD/QUOTE/ORDER_CARD`，`content LIKE`。前端会话列表全局搜索框 + 聊天页会话内搜索，搜索结果可跳转并高亮定位消息。
 
 ### ADR-2 询价/报价建模：扩展现有 `trade_quote`，不新建 `TradeInquiry`
 

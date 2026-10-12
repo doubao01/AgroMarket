@@ -102,3 +102,10 @@ public class ChatMessagePageDto
     /// <summary>对方已送达游标。</summary>
     public long? PeerLastDeliveredMessageId { get; set; }
 }
+
+/// <summary>全局搜索结果: 会话 + 命中的消息。</summary>
+public class ChatSearchResultDto
+{
+    public ChatConversationDto Conversation { get; set; } = new();
+    public ChatMessageDto Message { get; set; } = new();
+}

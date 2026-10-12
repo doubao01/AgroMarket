@@ -141,8 +141,9 @@ dotnet run --project AgroMarket.Tests
 - 微信式富消息：消息撤回（发送者 2 分钟内，撤回后内容脱敏、会话列表显示"[已撤回]"）、引用回复（`replyToMessageId`）、图片消息（`messageType=IMAGE`，`payload.url`）、对方"正在输入"提示、消息状态（发送中/已发送/已送达/已读，依对端游标计算）、时间分组气泡与长按菜单（复制/引用/撤回/拉黑）。
 - 从聊天转订单：会话内可直接分享商品卡片（`PRODUCT_CARD`）、发起结构化报价（`QUOTE`，写入 `trade_quote.conversation_id`）、在会话内**还价/接受/拒绝报价**（`.../quotes/{quoteId}/counter|accept|reject`，状态变化实时推送更新卡片）、从聊天直接下单（自动生成已接受报价并创建订单，推送 `ORDER_CARD`）；交易状态仍由后端状态机强制流转。
 - 拉黑管理：`POST /blocks`、`DELETE /blocks/{userId}`、`GET /blocks`；任一方向拉黑后，双方无法发起会话或发送消息（`chat_block`）。
-- 接口前缀 `/api/chat`：`POST /conversations`、`GET /conversations`、`GET /conversations/{id}`、`PUT /conversations/{id}/settings`、`DELETE /conversations/{id}`、`GET /conversations/{id}/messages`、`POST /conversations/{id}/messages`、`POST /conversations/{id}/read`、`POST /conversations/{id}/delivered`、`POST /conversations/{id}/typing`、`POST /conversations/{id}/share-product`、`POST /conversations/{id}/quote`、`POST /conversations/{id}/quotes/{quoteId}/counter|accept|reject`、`POST /conversations/{id}/order`、`POST /messages/{id}/recall`、`GET /unread`、`GET/POST /blocks`、`DELETE /blocks/{userId}`；实时通道 `GET /ws/chat?token=`。
-- 前端：`pages/chat/list.vue`（会话列表，已作为底部"消息"标签）、`pages/chat/chat.vue`（聊天窗口，含报价卡片操作面板：接受/还价/拒绝）；供应/采购详情页提供"聊一聊"入口。
+- 消息搜索：全局搜索 `GET /search?keyword=`（在用户参与的会话中匹配消息，返回命中会话+消息）与会话内搜索 `GET /search?keyword=&conversationId=`（校验成员）；仅匹配未撤回的文本/卡片类消息。
+- 接口前缀 `/api/chat`：`POST /conversations`、`GET /conversations`、`GET /conversations/{id}`、`PUT /conversations/{id}/settings`、`DELETE /conversations/{id}`、`GET /conversations/{id}/messages`、`POST /conversations/{id}/messages`、`POST /conversations/{id}/read`、`POST /conversations/{id}/delivered`、`POST /conversations/{id}/typing`、`POST /conversations/{id}/share-product`、`POST /conversations/{id}/quote`、`POST /conversations/{id}/quotes/{quoteId}/counter|accept|reject`、`POST /conversations/{id}/order`、`POST /messages/{id}/recall`、`GET /unread`、`GET /search`、`GET/POST /blocks`、`DELETE /blocks/{userId}`；实时通道 `GET /ws/chat?token=`。
+- 前端：`pages/chat/list.vue`（会话列表，已作为底部"消息"标签，含全局搜索框）、`pages/chat/chat.vue`（聊天窗口，含报价卡片操作面板与会话内搜索，支持从搜索结果跳转高亮定位消息）；供应/采购详情页提供"聊一聊"入口。
 
 ## 数据大屏 + AI 能力
 

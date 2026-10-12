@@ -116,6 +116,7 @@ cd backend && dotnet run --project AgroMarket.Api
 | POST | `/api/chat/conversations/{id}/quotes/{quoteId}/counter` | 会话内还价（生成新报价，复用会话） |
 | POST | `/api/chat/conversations/{id}/order` | 从聊天直接下单（生成已接受报价→订单，推送 ORDER_CARD） |
 | GET | `/api/chat/unread` | 未读总数 |
+| GET | `/api/chat/search` | 消息搜索（`keyword` 必填；`conversationId` 可选，空为全局；`limit`），返回命中会话+消息 |
 | GET | `/api/chat/blocks` | 拉黑列表 |
 | POST | `/api/chat/blocks` | 拉黑用户（`userId`） |
 | DELETE | `/api/chat/blocks/{userId}` | 取消拉黑 |
@@ -185,7 +186,7 @@ AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、供
 | 订单 | GET/POST | `/api/orders`、`/api/orders/{id}`、`/api/orders/from-quote/{quoteId}`、`/api/orders/{id}/status/{operation}` |
 | 收藏 | GET/POST/DELETE | `/api/favorites`、`/api/favorites/{targetType}/{targetId}` |
 | 消息 | GET/POST | `/api/messages`、`/api/messages/{id}/read`、`/api/messages/read-all`、`/api/messages/unread-count` |
-| 聊天 | GET/POST/PUT/DELETE | `/api/chat/conversations`、`/api/chat/conversations/{id}`、`.../settings`、`.../messages`、`.../read`、`.../delivered`、`.../typing`、`.../share-product`、`.../quote`、`.../order`、`/api/chat/messages/{id}/recall`、`/api/chat/unread`、`/api/chat/blocks` |
+| 聊天 | GET/POST/PUT/DELETE | `/api/chat/conversations`、`/api/chat/conversations/{id}`、`.../settings`、`.../messages`、`.../read`、`.../delivered`、`.../typing`、`.../share-product`、`.../quote`、`.../order`、`/api/chat/messages/{id}/recall`、`/api/chat/unread`、`/api/chat/search`、`/api/chat/blocks` |
 | 地址 | GET/POST/DELETE | `/api/addresses`、`/api/addresses/{id}` |
 | 举报/公告/上传 | - | `/api/reports`、`/api/notices`、`/api/files/upload` |
 | 管理 | GET/POST | `/api/admin/stats|users|auths|supplies|demands|reports|logs` 及对应 audit/freeze/handle 操作 |
