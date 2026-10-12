@@ -1,9 +1,12 @@
 <template>
-  <view class="dash">
+  <view class="dash" :class="{ dark }">
     <!-- 顶部标题栏 -->
     <view class="hero">
-      <view class="hero-title">息县农贸通 · 数据大屏</view>
-      <view class="hero-sub">统计口径：真实成交（不含演示与模拟支付）</view>
+      <view class="hero-main">
+        <view class="hero-title">息县农贸通 · 数据大屏</view>
+        <view class="hero-sub">统计口径：真实成交（不含演示与模拟支付）</view>
+      </view>
+      <text class="theme-toggle" @tap="toggleTheme">{{ dark ? '亮色' : '投屏' }}</text>
     </view>
 
     <!-- 核心指标 -->
@@ -138,6 +141,7 @@ export default {
       askText: '',
       askAnswer: '',
       loading: false,
+      dark: false,
     }
   },
   computed: {
@@ -149,6 +153,7 @@ export default {
     trendAmount() { return this.trend.reduce((s, p) => s + Number(p.dealAmount || 0), 0).toFixed(2) },
   },
   onLoad() {
+    try { this.dark = uni.getStorageSync('dash_dark') === 1 } catch (e) {}
     this.loadAll()
   },
   onPullDownRefresh() {
@@ -209,6 +214,10 @@ export default {
       return Math.max(v > 0 ? 6 : 0, p) + '%'
     },
     shortDate(d) { return d ? d.slice(5) : '' },
+    toggleTheme() {
+      this.dark = !this.dark
+      try { uni.setStorageSync('dash_dark', this.dark ? 1 : 0) } catch (e) {}
+    },
     roleLabel(r) {
       const map = { ADMIN: '管理员', FARMER: '农户', BUYER: '采购商', COOP: '合作社' }
       return map[r] || r
@@ -242,9 +251,13 @@ export default {
 
 <style scoped>
 .dash { min-height: 100vh; background: #f4f6f4; padding: 24rpx 24rpx 60rpx; box-sizing: border-box; }
-.hero { background: linear-gradient(135deg, #2e8b57, #3aa76d); border-radius: 20rpx; padding: 32rpx; color: #fff; }
+.hero { display: flex; align-items: center; justify-content: space-between; background: linear-gradient(135deg, #2e8b57, #3aa76d); border-radius: 20rpx; padding: 32rpx; color: #fff; }
 .hero-title { font-size: 38rpx; font-weight: 700; }
 .hero-sub { font-size: 22rpx; opacity: 0.85; margin-top: 10rpx; }
+.theme-toggle {
+  flex: none; margin-left: 20rpx; font-size: 24rpx; color: #fff;
+  border: 1rpx solid rgba(255,255,255,0.7); border-radius: 24rpx; padding: 8rpx 24rpx;
+}
 
 .metrics { display: flex; flex-wrap: wrap; margin-top: 24rpx; }
 .metric { width: 50%; box-sizing: border-box; padding: 8rpx; }
@@ -291,4 +304,53 @@ export default {
 .ask-btn { margin-left: 16rpx; background: #2e8b57; color: #fff; font-size: 24rpx; }
 .ai-answer { margin-top: 18rpx; background: #f0f6f2; border-radius: 12rpx; padding: 20rpx; font-size: 25rpx; color: #22322a; line-height: 1.6; }
 .foot { text-align: center; font-size: 24rpx; color: #a7b3ac; padding: 30rpx; }
+
+/* ---------- 暗色投屏主题 ---------- */
+.dash.dark { background: #0d1b14; }
+.dash.dark .hero { background: linear-gradient(135deg, #103a28, #1d5c3f); }
+.dash.dark .metric-val { background: #14251c; color: #5fd694; }
+.dash.dark .metric-label { background: #14251c; color: #8fa79a; }
+.dash.dark .panel { background: #14251c; }
+.dash.dark .panel-title { color: #e6f2ea; }
+.dash.dark .range-tab { color: #8fa79a; background: #1e332697; }
+.dash.dark .range-tab.active { background: #2e8b57; color: #fff; }
+.dash.dark .bar { background: #3aa76d; }
+.dash.dark .bar.orange { background: #f2952b; }
+.dash.dark .bar.green { background: #5fd694; }
+.dash.dark .bar-x { color: #6f8578; }
+.dash.dark .trend-legend { color: #8fa79a; }
+.dash.dark .row-name { color: #d5e5db; }
+.dash.dark .row-bar-wrap { background: #1e3326; }
+.dash.dark .row-val { color: #8fa79a; }
+.dash.dark .chip { background: #1e3326; }
+.dash.dark .chip-role { color: #8fa79a; }
+.dash.dark .chip-val { color: #5fd694; }
+.dash.dark .empty { color: #6f8578; }
+.dash.dark .ai-summary { color: #e6f2ea; }
+.dash.dark .ai-hl { color: #b6cabf; }
+.dash.dark .ask-input { background: #1e3326; color: #e6f2ea; }
+.dash.dark .ai-answer { background: #1e3326; color: #d5e5db; }
+.dash.dark .foot { color: #6f8578; }
+
+/* ---------- 投屏大字号（远距离可读） ---------- */
+.dash.dark .hero-title { font-size: 52rpx; }
+.dash.dark .hero-sub { font-size: 26rpx; }
+.dash.dark .theme-toggle { font-size: 26rpx; }
+.dash.dark .metric-val { font-size: 56rpx; }
+.dash.dark .metric-label { font-size: 26rpx; }
+.dash.dark .panel-title { font-size: 38rpx; }
+.dash.dark .range-tab { font-size: 26rpx; }
+.dash.dark .bar-x { font-size: 22rpx; transform: scale(1); }
+.dash.dark .trend-legend { font-size: 28rpx; }
+.dash.dark .row-name { font-size: 30rpx; width: 180rpx; }
+.dash.dark .row-val { font-size: 28rpx; width: 180rpx; }
+.dash.dark .row-bar-wrap { height: 24rpx; }
+.dash.dark .chip { padding: 24rpx 34rpx; }
+.dash.dark .chip-role { font-size: 26rpx; }
+.dash.dark .chip-val { font-size: 48rpx; }
+.dash.dark .empty { font-size: 28rpx; }
+.dash.dark .ai-summary { font-size: 34rpx; }
+.dash.dark .ai-hl { font-size: 30rpx; }
+.dash.dark .ask-input { font-size: 30rpx; }
+.dash.dark .ai-answer { font-size: 30rpx; }
 </style>
