@@ -34,8 +34,8 @@ public class DashboardService
         return value;
     }
 
-    // 真实成交订单的公共谓词
-    private const string RealOrderWhere =
+    // 真实成交订单的公共谓词 (联动模块复用同一口径)
+    public const string RealOrderWhere =
         @"o.status='COMPLETED' AND o.is_demo=0 AND EXISTS (
             SELECT 1 FROM payment_record p
             WHERE p.order_id=o.id AND p.status='SUCCESS' AND p.channel NOT IN ('MOCK','OFFLINE','DEMO'))";

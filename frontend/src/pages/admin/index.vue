@@ -21,6 +21,11 @@
       <text class="dash-entry-arrow">›</text>
     </view>
 
+    <view class="card dash-entry" style="margin:16rpx 24rpx;" @tap="goFederation">
+      <text class="dash-entry-title">节点联动 / 数据上报同步</text>
+      <text class="dash-entry-arrow">›</text>
+    </view>
+
     <view class="tabs mt16">
       <view class="tab" :class="{ active: tab === 'supply' }" @tap="switchTab('supply')">供审</view>
       <view class="tab" :class="{ active: tab === 'demand' }" @tap="switchTab('demand')">采审</view>
@@ -67,6 +72,7 @@ export default {
     async loadStats() { try { const s = await adminApi.stats(); if (s) this.stats = s } catch (e) {} },
     goDashboard() { uni.navigateTo({ url: '/pages/dashboard/index' }) },
     goManage() { uni.navigateTo({ url: '/pages/admin/manage' }) },
+    goFederation() { uni.navigateTo({ url: '/pages/admin/federation' }) },
     switchTab(t) { this.tab = t; this.reload() },
     async reload() {
       this.loading = true

@@ -24,6 +24,7 @@
     { "path": "pages/notice/index", "style": { "navigationBarTitleText": "平台公告" } },
     { "path": "pages/admin/index", "style": { "navigationBarTitleText": "管理后台" } },
     { "path": "pages/admin/manage", "style": { "navigationBarTitleText": "后台管理" } },
+    { "path": "pages/admin/federation", "style": { "navigationBarTitleText": "节点联动" } },
     { "path": "pages/dashboard/index", "style": { "navigationBarTitleText": "数据大屏", "enablePullDownRefresh": true } },
     { "path": "pages/ai/assistant", "style": { "navigationBarTitleText": "AI 助手" } }
   ],

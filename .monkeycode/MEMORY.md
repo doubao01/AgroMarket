@@ -49,7 +49,7 @@ This file records user instructions, preferences, and teachings for reference in
 - Context: Discovered by Agent while adding the chat module migration
 - Category: Operations & Deployment
 - Instructions:
-  - 数据库脚本按序执行：`database/01_schema.sql`（结构）→ `02_seed.sql`（种子）→ `03_chat.sql`（聊天模块增量迁移，含 chat_* 表 + trade_quote 扩展列）→ `04_chat_wechat.sql`（微信式增强：chat_message 增 `reply_to_message_id`/`recalled_at`，chat_participant 增 `last_delivered_message_id`）→ `05_ai_chat.sql`（AI 对话持久化：`ai_conversation`/`ai_message`）→ `06_chat_cleanup.sql`（会话备注名 `chat_participant.remark`；DROP 死表 `chat_message_receipt`/`chat_attachment`），`database/init-db.sh` 已串联六者且可重复执行。
+  - 数据库脚本按序执行：`database/01_schema.sql`（结构）→ `02_seed.sql`（种子）→ `03_chat.sql`（聊天模块增量迁移，含 chat_* 表 + trade_quote 扩展列）→ `04_chat_wechat.sql`（微信式增强：chat_message 增 `reply_to_message_id`/`recalled_at`，chat_participant 增 `last_delivered_message_id`）→ `05_ai_chat.sql`（AI 对话持久化：`ai_conversation`/`ai_message`）→ `06_chat_cleanup.sql`（会话备注名 `chat_participant.remark`；DROP 死表 `chat_message_receipt`/`chat_attachment`）→ `07_federation.sql`（多节点联动：`fed_node`/`fed_report`/`fed_daily_metric`/`fed_business_record`/`fed_sync_cursor`），`database/init-db.sh` 已串联七者且可重复执行。
   - 对已在运行的库应用新增迁移：用应用账号 `mysql -uagromarket -pagromarket_dev_2026 agro_market < database/0X_xxx.sql`（脚本用 `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS`，幂等）。若需要 DDL 权限，用本地 socket 的 root：`mysql -uroot < ...`（**不要带 `-h127.0.0.1`**，root 走 unix_socket 认证，带 `-h` 会 Access denied）。
   - 本机同时有 `mysql` 与 `mariadb` 两个客户端；本地应用账号 `agromarket` / `agromarket_dev_2026`，root 走本地 socket 免密。
   - 后端启动依赖开发配置：`ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS=http://127.0.0.1:8080 dotnet run --no-build`（连接串/JWT 在 appsettings.Development.json）。
@@ -109,3 +109,17 @@ This file records user instructions, preferences, and teachings for reference in
   - 免打扰（`is_muted`）前端长按菜单可切换；`chat-store` 对免打扰会话不弹新消息提示（未读仍累计）。
   - 死表 `chat_message_receipt`/`chat_attachment` 已全仓库确认无代码引用，从 `03_chat.sql` 移除并在 `06_chat_cleanup.sql` DROP。
   - 前端无 Pinia/事件总线，全局状态用 Vue `reactive` 模块单例（`chat-store.js`）实现即可；H5 与 mp-weixin 构建产物已确认包含新逻辑（如 `replace(/^http/,"ws")`、`设置备注名`）。
+
+[Project Knowledge Summary]
+- Date: 2026-10-12
+- Context: Discovered by Agent while implementing multi-node federation (data reporting / sync)
+- Category: Workflow & Collaboration / Environment Configuration / Troubleshooting & Debugging
+- Instructions:
+  - 联动模块位于 `backend/AgroMarket.Api/Federation/`（Api/Application/Infrastructure/Dtos 分层，风格同 `Chat/`）：`FederationTokenService`（节点 JWT，issuer/audience 均为 `AgroMarketFederation`，HS256，密钥 `Federation:SharedKey`，claims `node_code/node_name/node_level/region_code`，与用户登录 JWT 完全隔离）；`[RequireNode]` + `RequireNodeFilter`（全局注册）从 `Authorization: Bearer` 或 `X-Node-Token` 解析节点身份；`FederationSnapshotBuilder` 生成本地"汇总指标+脱敏明细"；`FederationService` 负责接收/推送/拉取；`FederationAdminService` 提供管理端查询；`FederationSyncWorker`（BackgroundService）按 `Federation:SyncIntervalMinutes` 定时推+拉。
+  - 接口：节点间 `api/federation/node/{ping|reports|export}`（上报接收校验"payload.NodeCode == 令牌身份"，不一致 403）；管理端 `api/admin/federation/{self|nodes|nodes/token|reports|metrics|records|aggregate|sync/push|sync/pull}`（仅 ADMIN）。幂等键：指标 `来源+日期`、明细 `来源+类型+外部ID`、批次 `来源+批次号`。
+  - 配置节点 `Federation:*`（`Enabled`/`AutoSync`/`NodeCode`/`NodeName`/`Level`/`RegionCode`/`SharedKey`/`SyncIntervalMinutes`/`BackfillDays`/`RecordWindowHours`/`MaxRecordsPerPush`）。`Program.cs` 校验：`Enabled=true` 时必须有 `NodeCode/NodeName/SharedKey(>=32 字节)`。开发 `appsettings.Development.json`：`Enabled=true, AutoSync=false`（**关闭定时同步以保证集成测试确定性**），节点身份 `node-xixian`。推送时若对端未配置 `node_token` 则自动用 `IssueSelf()` 的本节点令牌。
+  - 口径与脱敏：指标复用 `DashboardService.RealOrderWhere`（已由 `private` 改为 `public`，真实成交=COMPLETED+is_demo=0+非 MOCK/OFFLINE/DEMO 支付）；出站自由文本经 `PiiMasker`（去手机号/身份证/邮箱），订单买卖双方压成不可逆假名 `ref_xxx`（以节点编码加盐的 SHA256 前缀），明细无任何自然人身份/联系方式。
+  - **MariaDB 坑**：`CAST(@x AS JSON)` 不被支持（语法错误），JSON 列在 MariaDB 是 LONGTEXT 别名，直接以字符串参数插入即可。
+  - **Dapper/MySqlConnector 坑**：`DateOnly` 不能作为参数值（`NotSupportedException: The member from of type System.DateOnly cannot be used as a parameter value`），一律用 `DateTime`。
+  - 集成测试 `backend/AgroMarket.Tests/Program.cs` 第 13 段覆盖联动（共 143 断言）：节点令牌鉴权、上报幂等、身份不一致 403、推/拉、批次审计、跨节点汇聚、脱敏（先发布标题含手机号的供应并经管理员审核上架→推送→校验落库标题已打码）。**拉/推测试用"自身实例当对端"**（注册 `baseUrl` 指向 `http://127.0.0.1:8080` 的对端节点）即可，无需第二个进程；测试末尾删除该对端节点并下架测试供应。
+  - 前端管理后台联动页：`frontend/src/pages/admin/federation.vue`（路由 `pages/admin/federation`，入口在 `pages/admin/index.vue`），API 在 `frontend/src/api/index.js` 的 `federationApi`。
