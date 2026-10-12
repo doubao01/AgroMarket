@@ -139,17 +139,19 @@ sh "$ROOT/scripts/federation-bootstrap.sh"
 # ---------- 4. 验证 ----------
 echo
 echo "==================== 验证 ===================="
-for pair in "$PORT_A:A:$CODE_B" "$PORT_B:B:$CODE_A"; do
-  port=${pair%%:*}; rest=${pair#*:}; label=${rest%%:*}; peer=${rest#*:}
-  agg=$(curl -fsS "http://127.0.0.1:$port/api/admin/federation/aggregate?range=30d" \
-    -H "Authorization: Bearer $(login_token "$port")")
-  if printf '%s' "$agg" | grep -q "\"sourceNodeCode\":\"$peer\""; then
-    echo "[PASS] 节点 $label 的汇聚数据已包含对端来源 $peer"
+verify_node() { # $1=port $2=selfCode $3=peerCode $4=label
+  agg=$(curl -fsS "http://127.0.0.1:$1/api/admin/federation/aggregate?range=30d" \
+    -H "Authorization: Bearer $(login_token "$1")")
+  srcs=$(printf '%s' "$agg" | grep -o '"sourceNodeCode":"[^"]*"' | sort -u | tr '\n' ' ')
+  if printf '%s' "$agg" | grep -q "\"sourceNodeCode\":\"$2\"" \
+     && printf '%s' "$agg" | grep -q "\"sourceNodeCode\":\"$3\""; then
+    echo "[PASS] 节点 $4 全景汇聚含本节点 $2 与对端 $3  (来源: $srcs)"
   else
-    echo "[FAIL] 节点 $label 未汇聚到对端 $peer 的数据" >&2
-    echo "       $agg" >&2
+    echo "[FAIL] 节点 $4 全景汇聚不完整 (期望含 $2 与 $3, 实际: $srcs)" >&2
   fi
-done
+}
+verify_node "$PORT_A" "$CODE_A" "$CODE_B" "A"
+verify_node "$PORT_B" "$CODE_B" "$CODE_A" "B"
 
 echo
 show_aggregate "$PORT_A" "A"

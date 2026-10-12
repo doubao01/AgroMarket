@@ -58,6 +58,7 @@ services:
       Federation__SharedKey: ${FEDERATION_SHARED_KEY:-}
       Federation__AutoSync: "${FEDERATION_AUTOSYNC:-true}"
       Federation__SyncIntervalMinutes: "${FEDERATION_SYNC_INTERVAL_MINUTES:-30}"
+      Federation__IncludeSelfInAggregate: "${FEDERATION_INCLUDE_SELF_IN_AGGREGATE:-true}"
     ports:
       - "${API_PORT:-8080}:8080"
     volumes:

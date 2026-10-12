@@ -26,10 +26,20 @@ public class FederationSnapshotBuilder
     }
 
     /// <summary>生成最近 days 天的按天汇总指标。</summary>
-    public async Task<List<FedMetricDto>> BuildMetricsAsync(int days)
+    public Task<List<FedMetricDto>> BuildMetricsAsync(int days)
     {
         if (days < 1) days = 1;
-        var from = DateTime.Today.AddDays(-(days - 1));
+        var to = DateTime.Today;
+        return BuildMetricsAsync(to.AddDays(-(days - 1)), to);
+    }
+
+    /// <summary>生成 [from, to] 闭区间内每一天的按天汇总指标 (含无数据日期)。</summary>
+    public async Task<List<FedMetricDto>> BuildMetricsAsync(DateTime from, DateTime to)
+    {
+        from = from.Date;
+        to = to.Date;
+        if (to < from) (from, to) = (to, from);
+        var days = (int)(to - from).TotalDays + 1;
         using var conn = _db.Create();
 
         var totalUsers = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM sys_user");
