@@ -87,10 +87,10 @@
     </view>
 
     <region-picker
-      :visible.sync="showRegion"
+      v-model:visible="showRegion"
       allow-all
-      :townId.sync="townId"
-      :villageId.sync="villageId"
+      v-model:townId="townId"
+      v-model:villageId="villageId"
       @town-change="onTownChange"
       @village-change="onVillageChange"
     />
