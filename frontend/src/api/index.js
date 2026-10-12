@@ -126,7 +126,12 @@ export const adminApi = {
   auditDemand: (id, approve) => http.post(`/api/admin/demands/${id}/audit/${approve}`, {}, { auth: true }),
   reports: (query) => http.get('/api/admin/reports', query || {}, { auth: true }),
   handleReport: (id, resolve) => http.post(`/api/admin/reports/${id}/handle/${resolve}`, {}, { auth: true }),
-  notices: (query) => http.get('/api/admin/logs', query || {}, { auth: true }),
+  logs: (query) => http.get('/api/admin/logs', query || {}, { auth: true }),
+  createNotice: (data) => http.post('/api/admin/notices', data, { auth: true }),
+  unpublishNotice: (id) => http.post(`/api/admin/notices/${id}/unpublish`, {}, { auth: true }),
+  createRegion: (data) => http.post('/api/admin/regions', data, { auth: true }),
+  setRegionEnabled: (id, enabled) => http.post(`/api/admin/regions/${id}/enabled/${enabled}`, {}, { auth: true }),
+  renameRegion: (id, name) => http.post(`/api/admin/regions/${id}/rename`, { name }, { auth: true }),
 }
 
 export const dashboardApi = {

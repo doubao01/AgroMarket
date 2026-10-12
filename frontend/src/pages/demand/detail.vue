@@ -29,6 +29,8 @@
         </view>
         <view v-else class="muted">登录后可查看联系方式</view>
       </view>
+
+      <view v-if="!isOwner" class="report-link" @tap="report">举报该信息</view>
     </view>
     <view class="empty" v-else>{{ loading ? '加载中...' : '信息不存在或已关闭' }}</view>
 
@@ -61,6 +63,7 @@
 <script>
 import { demandApi, quoteApi, chatApi } from '../../api/index'
 import { requireLogin, getUser } from '../../utils/request'
+import { reportTarget } from '../../utils/report'
 
 export default {
   data() {
@@ -134,6 +137,7 @@ export default {
       } catch (e) {}
     },
     callPhone() { if (this.item.contactPhone) uni.makePhoneCall({ phoneNumber: this.item.contactPhone }) },
+    report() { reportTarget('DEMAND', this.item.id, '举报该采购信息') },
     fmtDate(d) { return (d || '').slice(0, 10) },
   },
 }
@@ -159,4 +163,5 @@ export default {
   padding: 32rpx; padding-bottom: calc(32rpx + env(safe-area-inset-bottom));
 }
 .page { padding-bottom: 140rpx; }
+.report-link { text-align: center; font-size: 24rpx; color: #9aa8a0; padding: 24rpx 0; }
 </style>
