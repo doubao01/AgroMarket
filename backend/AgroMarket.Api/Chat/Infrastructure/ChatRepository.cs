@@ -34,6 +34,7 @@ public class ChatConversationRow
     public int UnreadCount { get; set; }
     public bool IsPinned { get; set; }
     public bool IsMuted { get; set; }
+    public string? Remark { get; set; }
     public long PeerId { get; set; }
     public string PeerNickname { get; set; } = string.Empty;
     public string? PeerAvatar { get; set; }
@@ -69,6 +70,7 @@ FROM chat_message";
 SELECT c.id AS Id, c.source_type AS SourceType, c.source_id AS SourceId,
        c.last_message_at AS LastMessageAt,
        me.unread_count AS UnreadCount, me.is_pinned AS IsPinned, me.is_muted AS IsMuted,
+       me.remark AS Remark,
        u.id AS PeerId, u.nickname AS PeerNickname, u.avatar_url AS PeerAvatar,
        mp.subject_name AS SubjectName, mp.audit_status AS AuditStatus,
        (SELECT CASE WHEN m.status='RECALLED' THEN '[已撤回]' ELSE m.content END
@@ -271,15 +273,16 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
         }
     }
 
-    public async Task UpdateSettingsAsync(long convId, long userId, bool? isPinned, bool? isMuted)
+    public async Task UpdateSettingsAsync(long convId, long userId, bool? isPinned, bool? isMuted, string? remark = null)
     {
         using var conn = _db.Create();
         await conn.ExecuteAsync(
             @"UPDATE chat_participant SET
                 is_pinned = COALESCE(@pin, is_pinned),
-                is_muted  = COALESCE(@mute, is_muted)
+                is_muted  = COALESCE(@mute, is_muted),
+                remark    = CASE WHEN @remark IS NULL THEN remark ELSE NULLIF(TRIM(@remark), '') END
               WHERE conversation_id=@c AND user_id=@uid",
-            new { pin = isPinned, mute = isMuted, c = convId, uid = userId });
+            new { pin = isPinned, mute = isMuted, remark, c = convId, uid = userId });
     }
 
     public async Task HideAsync(long convId, long userId)
@@ -388,6 +391,7 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
             "SELECT c.id AS Id, c.source_type AS SourceType, c.source_id AS SourceId, " +
             "c.last_message_at AS LastMessageAt, " +
             "me.unread_count AS UnreadCount, me.is_pinned AS IsPinned, me.is_muted AS IsMuted, " +
+            "me.remark AS Remark, " +
             "u.id AS PeerId, u.nickname AS PeerNickname, u.avatar_url AS PeerAvatar, " +
             "mp.subject_name AS SubjectName, mp.audit_status AS AuditStatus, " +
             "(SELECT CASE WHEN m.status='RECALLED' THEN '[已撤回]' ELSE m.content END " +
@@ -496,6 +500,7 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
         UnreadCount = r.UnreadCount,
         IsPinned = r.IsPinned,
         IsMuted = r.IsMuted,
+        Remark = r.Remark,
         Peer = new ChatPeerDto
         {
             Id = r.PeerId,

@@ -15,20 +15,23 @@ if [ -n "$DB_PASS" ]; then
   MYSQL_CMD+=(-p"$DB_PASS")
 fi
 
-echo "[1/5] 执行表结构脚本 01_schema.sql"
+echo "[1/6] 执行表结构脚本 01_schema.sql"
 "${MYSQL_CMD[@]}" < "$(dirname "$0")/01_schema.sql"
 
-echo "[2/5] 执行种子数据脚本 02_seed.sql"
+echo "[2/6] 执行种子数据脚本 02_seed.sql"
 "${MYSQL_CMD[@]}" < "$(dirname "$0")/02_seed.sql"
 
-echo "[3/5] 执行聊天模块迁移 03_chat.sql"
+echo "[3/6] 执行聊天模块迁移 03_chat.sql"
 "${MYSQL_CMD[@]}" < "$(dirname "$0")/03_chat.sql"
 
-echo "[4/5] 执行聊天增强迁移 04_chat_wechat.sql"
+echo "[4/6] 执行聊天增强迁移 04_chat_wechat.sql"
 "${MYSQL_CMD[@]}" < "$(dirname "$0")/04_chat_wechat.sql"
 
-echo "[5/5] 执行 AI 对话迁移 05_ai_chat.sql"
+echo "[5/6] 执行 AI 对话迁移 05_ai_chat.sql"
 "${MYSQL_CMD[@]}" < "$(dirname "$0")/05_ai_chat.sql"
+
+echo "[6/6] 执行聊天维护迁移 06_chat_cleanup.sql"
+"${MYSQL_CMD[@]}" < "$(dirname "$0")/06_chat_cleanup.sql"
 
 echo "数据库初始化完成: agro_market"
 "${MYSQL_CMD[@]}" -e "USE agro_market; SELECT region_level, COUNT(*) AS cnt FROM sys_region GROUP BY region_level ORDER BY region_level;"

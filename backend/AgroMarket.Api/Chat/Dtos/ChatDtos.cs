@@ -7,8 +7,8 @@ namespace AgroMarket.Api.Chat.Dtos;
 /// <summary>发起/复用会话。peerUserId 为对方用户ID。</summary>
 public record ConversationCreateRequest(long PeerUserId, string? SourceType, long? SourceId);
 
-/// <summary>会话设置(置顶/免打扰)。</summary>
-public record ConversationSettingsRequest(bool? IsPinned, bool? IsMuted);
+/// <summary>会话设置(置顶/免打扰/备注名)。Remark 传空串表示清除备注。</summary>
+public record ConversationSettingsRequest(bool? IsPinned, bool? IsMuted, string? Remark = null);
 
 /// <summary>发送消息。clientMsgId 用于幂等。</summary>
 public record MessageSendRequest(
@@ -72,6 +72,8 @@ public class ChatConversationDto
     public int UnreadCount { get; set; }
     public bool IsPinned { get; set; }
     public bool IsMuted { get; set; }
+    /// <summary>我对该会话的备注名(仅自己可见)。为空时前端展示对方昵称。</summary>
+    public string? Remark { get; set; }
 }
 
 /// <summary>单条消息。</summary>

@@ -259,7 +259,10 @@ public class ChatService
     public async Task UpdateSettingsAsync(long userId, long convId, ConversationSettingsRequest req)
     {
         await EnsureParticipantAsync(convId, userId);
-        await _repo.UpdateSettingsAsync(convId, userId, req.IsPinned, req.IsMuted);
+        var remark = req.Remark?.Trim();
+        if (remark is { Length: > 64 })
+            throw new BizException("备注名过长(最多64字)", ErrorCodes.BadRequest);
+        await _repo.UpdateSettingsAsync(convId, userId, req.IsPinned, req.IsMuted, req.Remark);
     }
 
     public async Task HideAsync(long userId, long convId)

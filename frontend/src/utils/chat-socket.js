@@ -1,14 +1,16 @@
 // 站内聊天 WebSocket 客户端封装 (uni.connectSocket, H5 与小程序通用)
 // 协议见后端 ChatRealtimeHub: connected / pong / message / read / ack / error
-import { getToken } from './request'
+import { getToken, BASE_URL } from './request'
 
 function wsBase() {
   // #ifdef H5
+  // H5 走 vite 代理(/ws -> 后端), 使用当前页面主机
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   return `${proto}://${location.host}`
   // #endif
   // #ifndef H5
-  return 'ws://127.0.0.1:8080'
+  // 小程序等平台无代理, 复用 request.js 的 BASE_URL 推导 (http->ws, https->wss)
+  return BASE_URL.replace(/^http/, 'ws')
   // #endif
 }
 

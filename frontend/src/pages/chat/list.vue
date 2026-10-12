@@ -36,10 +36,10 @@
         @tap="openResult(r)"
       >
         <image v-if="r.conversation.peer.avatarUrl" class="avatar" :src="r.conversation.peer.avatarUrl" mode="aspectFill" />
-        <view v-else class="avatar avatar-text">{{ firstChar(r.conversation.peer.nickname) }}</view>
+        <view v-else class="avatar avatar-text">{{ firstChar(displayName(r.conversation)) }}</view>
         <view class="flex1 conv-body">
           <view class="between">
-            <text class="name">{{ r.conversation.peer.nickname }}</text>
+            <text class="name">{{ displayName(r.conversation) }}</text>
             <text class="muted">{{ fmtTime(r.message.createdAt) }}</text>
           </view>
           <view class="mt8">
@@ -61,12 +61,12 @@
         @longpress="manage(c)"
       >
         <image v-if="c.peer.avatarUrl" class="avatar" :src="c.peer.avatarUrl" mode="aspectFill" />
-        <view v-else class="avatar avatar-text">{{ firstChar(c.peer.nickname) }}</view>
+        <view v-else class="avatar avatar-text">{{ firstChar(displayName(c)) }}</view>
 
         <view class="flex1 conv-body">
           <view class="between">
             <view class="row">
-              <text class="name">{{ c.peer.nickname }}</text>
+              <text class="name">{{ displayName(c) }}</text>
               <text v-if="c.peer.verified" class="tag">已认证</text>
             </view>
             <text class="muted">{{ fmtTime(c.lastMessageAt) }}</text>
@@ -74,6 +74,7 @@
           <view class="between mt8">
             <text class="muted preview">{{ preview(c) }}</text>
             <view class="row">
+              <text v-if="c.isMuted" class="muted pin-flag">免打扰</text>
               <text v-if="c.isPinned" class="muted pin-flag">置顶</text>
               <text v-if="c.unreadCount" class="badge">{{ c.unreadCount > 99 ? '99+' : c.unreadCount }}</text>
             </view>
@@ -87,6 +88,7 @@
 <script>
 import { chatApi } from '../../api/index'
 import { requireLogin } from '../../utils/request'
+import { setConversations, onChatEvent, patchConversation } from '../../utils/chat-store'
 
 export default {
   data() {
@@ -105,15 +107,31 @@ export default {
       results: [],
     }
   },
-  onLoad() { if (!requireLogin()) return },
+  onLoad() {
+    if (!requireLogin()) return
+    this._unsubs = [
+      onChatEvent('message', () => this.scheduleReload()),
+      onChatEvent('recall', () => this.scheduleReload()),
+    ]
+  },
   onShow() { if (requireLogin()) this.reload() },
+  onUnload() {
+    (this._unsubs || []).forEach((fn) => { try { fn() } catch (e) {} })
+    this._unsubs = null
+    if (this._reloadTimer) { clearTimeout(this._reloadTimer); this._reloadTimer = null }
+  },
   onPullDownRefresh() { this.reload().finally(() => uni.stopPullDownRefresh()) },
   methods: {
+    scheduleReload() {
+      if (this._reloadTimer) return
+      this._reloadTimer = setTimeout(() => { this._reloadTimer = null; this.reload() }, 400)
+    },
     async reload() {
       this.loading = true
       try {
         const res = await chatApi.conversations({ filter: this.filter, page: 1, pageSize: 50 })
         this.items = res.items || []
+        setConversations(this.items)
         await this.loadUnread()
       } catch (e) {} finally { this.loading = false }
     },
@@ -149,12 +167,27 @@ export default {
       uni.navigateTo({ url: '/pages/message/index' })
     },
     manage(c) {
+      const list = [
+        c.isPinned ? '取消置顶' : '置顶会话',
+        c.isMuted ? '取消消息免打扰' : '消息免打扰',
+        '设置备注名',
+        '删除会话',
+      ]
       uni.showActionSheet({
-        itemList: [c.isPinned ? '取消置顶' : '置顶会话', '删除会话'],
+        itemList: list,
         success: async (r) => {
           try {
             if (r.tapIndex === 0) {
               await chatApi.updateSettings(c.id, { isPinned: !c.isPinned })
+              c.isPinned = !c.isPinned
+              patchConversation(c.id, { isPinned: c.isPinned })
+            } else if (r.tapIndex === 1) {
+              await chatApi.updateSettings(c.id, { isMuted: !c.isMuted })
+              c.isMuted = !c.isMuted
+              patchConversation(c.id, { isMuted: c.isMuted })
+            } else if (r.tapIndex === 2) {
+              this.rename(c)
+              return
             } else {
               await chatApi.removeConversation(c.id)
             }
@@ -162,6 +195,27 @@ export default {
           } catch (e) {}
         },
       })
+    },
+    rename(c) {
+      uni.showModal({
+        title: '设置备注名',
+        editable: true,
+        placeholderText: '留空则清除备注',
+        content: c.remark || '',
+        success: async (r) => {
+          if (!r.confirm) return
+          const remark = (r.content || '').trim()
+          try {
+            await chatApi.updateSettings(c.id, { remark })
+            c.remark = remark
+            patchConversation(c.id, { remark, peerName: remark || (c.peer && c.peer.nickname) })
+            this.reload()
+          } catch (e) {}
+        },
+      })
+    },
+    displayName(c) {
+      return c.remark || (c.peer && c.peer.nickname) || '用户'
     },
     preview(c) {
       const map = { IMAGE: '[图片]', FILE: '[文件]', PRODUCT_CARD: '[商品]', INQUIRY: '[询价]', QUOTE: '[报价]', ORDER_CARD: '[订单]', SYSTEM: '[系统]' }

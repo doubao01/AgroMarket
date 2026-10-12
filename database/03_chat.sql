@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS chat_participant (
   is_pinned            TINYINT(1) NOT NULL DEFAULT 0 COMMENT '置顶',
   is_muted             TINYINT(1) NOT NULL DEFAULT 0 COMMENT '免打扰',
   is_hidden            TINYINT(1) NOT NULL DEFAULT 0 COMMENT '隐藏/删除(软删)',
+  remark               VARCHAR(64) NULL COMMENT '我对该会话/对方的备注名(仅自己可见)',
   joined_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uk_cp_conv_user (conversation_id, user_id),
@@ -70,37 +71,6 @@ CREATE TABLE IF NOT EXISTS chat_message (
   CONSTRAINT fk_cm_conv FOREIGN KEY (conversation_id) REFERENCES chat_conversation(id),
   CONSTRAINT fk_cm_sender FOREIGN KEY (sender_id) REFERENCES sys_user(id)
 ) ENGINE=InnoDB COMMENT='聊天消息表';
-
--- ---------------------------------------------------------------
--- C4. chat_message_receipt 送达/已读回执
--- ---------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS chat_message_receipt (
-  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  message_id  BIGINT UNSIGNED NOT NULL,
-  user_id     BIGINT UNSIGNED NOT NULL,
-  delivered_at DATETIME(3) NULL,
-  read_at     DATETIME(3) NULL,
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_cmr_msg_user (message_id, user_id),
-  KEY idx_cmr_user (user_id, read_at),
-  CONSTRAINT fk_cmr_msg FOREIGN KEY (message_id) REFERENCES chat_message(id),
-  CONSTRAINT fk_cmr_user FOREIGN KEY (user_id) REFERENCES sys_user(id)
-) ENGINE=InnoDB COMMENT='消息回执表';
-
--- ---------------------------------------------------------------
--- C5. chat_attachment 消息附件 (图片/文件)
--- ---------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS chat_attachment (
-  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  message_id  BIGINT UNSIGNED NOT NULL,
-  file_url    VARCHAR(400) NOT NULL,
-  file_type   VARCHAR(20)  NOT NULL COMMENT 'IMAGE/FILE',
-  file_size   BIGINT UNSIGNED NULL,
-  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (id),
-  KEY idx_ca_msg (message_id),
-  CONSTRAINT fk_ca_msg FOREIGN KEY (message_id) REFERENCES chat_message(id)
-) ENGINE=InnoDB COMMENT='消息附件表';
 
 -- ---------------------------------------------------------------
 -- C6. chat_block 拉黑关系

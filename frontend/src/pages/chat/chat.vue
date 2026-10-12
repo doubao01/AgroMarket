@@ -120,7 +120,7 @@
 <script>
 import { chatApi, uploadImageSmart, supplyApi, demandApi } from '../../api/index'
 import { requireLogin, getUser } from '../../utils/request'
-import { createChatSocket } from '../../utils/chat-socket'
+import { getSocket, onChatEvent, setActiveConversation, initChat, refreshUnread } from '../../utils/chat-store'
 import { reportTarget } from '../../utils/report'
 
 const TIME_GAP = 5 * 60 * 1000
@@ -131,6 +131,7 @@ export default {
     return {
       convId: 0,
       peer: {},
+      remark: '',
       myId: 0,
       messages: [],
       input: '',
@@ -139,7 +140,6 @@ export default {
       scrollInto: '',
       sending: false,
       timer: null,
-      socket: null,
       wsConnected: false,
       loading: false,
       replyTo: null,
@@ -173,69 +173,84 @@ export default {
     } else {
       this.loadLatest()
     }
+    setActiveConversation(this.convId)
+    initChat()
+    this.bindSocket()
     this.startPoll()
-    this.connectWs()
   },
   onShow() {
     if (this.convId) {
+      setActiveConversation(this.convId)
+      initChat()
       this.loadLatest()
-      if (!this.socket || !this.socket.isOpen()) this.connectWs()
-      if (!this.wsConnected) this.startPoll()
+      if (this.socketOpen()) this.stopPoll()
+      else this.startPoll()
     }
   },
   onHide() { this.stopPoll() },
   onUnload() {
     this.stopPoll()
     this.stopTyping()
-    if (this.socket) { this.socket.close(); this.socket = null }
+    this.unbindSocket()
+    setActiveConversation(0)
+    refreshUnread()
   },
   methods: {
-    connectWs() {
-      if (this.socket) { this.socket.close(); this.socket = null }
-      this.socket = createChatSocket({
-        onMessage: (d) => {
+    socketOpen() {
+      const s = getSocket()
+      return !!(s && s.isOpen())
+    },
+    bindSocket() {
+      this.unbindSocket()
+      this._unsubs = [
+        onChatEvent('message', (d) => {
           if (Number(d.conversationId) !== this.convId || !d.message) return
           this.merge([d.message])
           this.scrollToBottom()
           this.markRead()
           this.markDelivered(d.message.id)
           if (Number(d.message.senderId) !== this.myId) this.clearTyping()
-        },
-        onRead: (d) => {
+        }),
+        onChatEvent('read', (d) => {
           if (Number(d.conversationId) !== this.convId) return
           this.peerLastRead = Number(d.lastReadMessageId || 0)
-        },
-        onDelivered: (d) => {
+        }),
+        onChatEvent('delivered', (d) => {
           if (Number(d.conversationId) !== this.convId) return
           this.peerLastDelivered = Number(d.lastDeliveredMessageId || 0)
-        },
-        onTyping: (d) => {
+        }),
+        onChatEvent('typing', (d) => {
           if (Number(d.conversationId) !== this.convId) return
           if (d.typing) this.showTyping()
           else this.clearTyping()
-        },
-        onRecall: (d) => {
+        }),
+        onChatEvent('recall', (d) => {
           if (Number(d.conversationId) !== this.convId) return
           this.applyRecall(Number(d.messageId))
-        },
-        onAck: (d) => {
+        }),
+        onChatEvent('ack', (d) => {
           if (Number(d.conversationId) !== this.convId || !d.clientMsgId) return
           this.settlePending(d.clientMsgId, Number(d.messageId))
-        },
-        onStatus: (s) => {
+        }),
+        onChatEvent('status', (s) => {
           this.wsConnected = s === 'open'
           if (s === 'open') this.stopPoll()
           else this.startPoll()
-        },
-      })
+        }),
+      ]
+    },
+    unbindSocket() {
+      (this._unsubs || []).forEach((fn) => { try { fn() } catch (e) {} })
+      this._unsubs = null
     },
     async loadConv() {
       try {
         const c = await chatApi.conversation(this.convId)
         this.peer = c.peer || {}
+        this.remark = c.remark || ''
         this.convSourceType = c.sourceType || ''
         this.convSourceId = c.sourceId || 0
-        uni.setNavigationBarTitle({ title: this.peer.nickname || '聊天' })
+        uni.setNavigationBarTitle({ title: this.remark || this.peer.nickname || '聊天' })
         this.loadSource()
       } catch (e) {}
     },
@@ -656,7 +671,7 @@ export default {
         return
       }
       this.typingSentAt = now
-      if (this.socket && this.socket.isOpen()) this.socket.send({ type: 'typing', conversationId: this.convId, typing: true })
+      if (this.socketOpen()) getSocket().send({ type: 'typing', conversationId: this.convId, typing: true })
       else chatApi.typing(this.convId, true).catch(() => {})
       this.scheduleTypingStop()
     },
@@ -668,7 +683,7 @@ export default {
       if (this.typingStopTimer) { clearTimeout(this.typingStopTimer); this.typingStopTimer = null }
       if (!this.typingSentAt) return
       this.typingSentAt = 0
-      if (this.socket && this.socket.isOpen()) this.socket.send({ type: 'typing', conversationId: this.convId, typing: false })
+      if (this.socketOpen()) getSocket().send({ type: 'typing', conversationId: this.convId, typing: false })
       else chatApi.typing(this.convId, false).catch(() => {})
     },
     showTyping() {
@@ -687,8 +702,8 @@ export default {
     },
     markDelivered(messageId) {
       if (!messageId || messageId <= 0) return
-      if (this.socket && this.socket.isOpen()) {
-        this.socket.send({ type: 'delivered', conversationId: this.convId, lastDeliveredMessageId: messageId })
+      if (this.socketOpen()) {
+        getSocket().send({ type: 'delivered', conversationId: this.convId, lastDeliveredMessageId: messageId })
       } else {
         chatApi.markDelivered(this.convId, messageId).catch(() => {})
       }
