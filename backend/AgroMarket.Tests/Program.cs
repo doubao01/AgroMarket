@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.WebSockets;
@@ -742,5 +743,257 @@ if (adminToken.Length > 0 && buyerToken.Length > 0)
     }
 }
 
+// ================= AI E2E: 自管 API 实例 + 内置 Mock LLM =================
+// 需要先构建 Api 项目 (dotnet build AgroMarket.Api)。该段会在 18080 端口拉起独立 API 进程，
+// 用环境变量注入 Mock LLM 地址, 验证真实工具调用协议 (role=tool 必须带 tool_call_id)。
+Console.WriteLine("\n--- AI E2E (自管实例 + Mock LLM) ---");
+
+string? apiDll = null;
+for (var probe = AppContext.BaseDirectory; probe is not null; probe = Path.GetDirectoryName(probe.TrimEnd(Path.DirectorySeparatorChar)))
+{
+    var candidate = Path.Combine(probe, "AgroMarket.Api", "bin", "Debug", "net10.0", "AgroMarket.Api.dll");
+    if (File.Exists(candidate)) { apiDll = candidate; break; }
+}
+
+if (apiDll is null)
+{
+    Console.WriteLine("  SKIP  AI E2E: 未找到 AgroMarket.Api.dll, 请先构建 Api 项目");
+}
+else
+{
+    var mock = new MockLlmServer(19099);
+    mock.Start();
+    Process? api = null;
+    var aiHttp = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:18080"), Timeout = TimeSpan.FromSeconds(30) };
+    try
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            Arguments = $"\"{apiDll}\"",
+            WorkingDirectory = Path.GetDirectoryName(apiDll)!,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+        psi.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:18080";
+        psi.Environment["Ai__BaseUrl"] = "http://127.0.0.1:19099/v1";
+        psi.Environment["Ai__ApiKey"] = "test-key";
+        psi.Environment["Ai__Model"] = "mock-model";
+        api = Process.Start(psi);
+
+        var aiUp = false;
+        for (var i = 0; i < 40; i++)
+        {
+            try { if ((await aiHttp.GetAsync("/health")).IsSuccessStatusCode) { aiUp = true; break; } }
+            catch { }
+            await Task.Delay(500);
+        }
+        Check("AI E2E 实例启动成功(18080 + Mock LLM)", aiUp);
+
+        if (aiUp)
+        {
+            async Task<string> AiLogin(string phone, string pwd)
+            {
+                var r = await aiHttp.PostAsync("/api/auth/login/password",
+                    JsonContent.Create(new { phone, password = pwd }));
+                var j = JsonDocument.Parse(await r.Content.ReadAsStringAsync()).RootElement;
+                return j.GetProperty("data").GetProperty("token").GetString()!;
+            }
+
+            async Task<(HttpStatusCode status, JsonElement body)> AiCall(HttpMethod method, string url, object? payload, string? token)
+            {
+                var req = new HttpRequestMessage(method, url);
+                if (payload != null) req.Content = JsonContent.Create(payload);
+                if (token != null) req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                var res = await aiHttp.SendAsync(req);
+                var txt = await res.Content.ReadAsStringAsync();
+                JsonElement body = default;
+                try { body = JsonDocument.Parse(txt).RootElement.Clone(); } catch { }
+                return (res.StatusCode, body);
+            }
+
+            var adminT = await AiLogin("13800000001", "Abc123456");
+            var buyerT = await AiLogin("13800000003", "Abc123456");
+
+            // 1) 发布辅助: titleSuggestions 字段解析
+            var (assistStatus, assistBody) = await AiCall(HttpMethod.Post, "/api/ai/assist/publish", new { type = "SUPPLY", title = "小麦" }, adminT);
+            var titlesOk = Data(assistBody).ValueKind == JsonValueKind.Object && Data(assistBody).TryGetProperty("titleSuggestions", out var ts)
+                && ts.ValueKind == JsonValueKind.Array && ts.GetArrayLength() >= 2;
+            Check("AI 发布辅助返回标题建议(titleSuggestions)", assistStatus == HttpStatusCode.OK && titlesOk,
+                $"status={(int)assistStatus}");
+
+            // 2) 大屏解读: anomalies 字段解析
+            var (insightStatus, insightBody) = await AiCall(HttpMethod.Post, "/api/ai/insight", null, adminT);
+            var anomaliesOk = Data(insightBody).ValueKind == JsonValueKind.Object && Data(insightBody).TryGetProperty("anomalies", out var an)
+                && an.ValueKind == JsonValueKind.Array && an.GetArrayLength() >= 1;
+            Check("AI 大屏解读返回异常提醒(anomalies)", insightStatus == HttpStatusCode.OK && anomaliesOk,
+                $"status={(int)insightStatus}");
+
+            // 3) AI 客服: 两轮工具调用往返 (Mock 强校验 role=tool 必须带 tool_call_id, 否则 400)
+            var (_, convBefore) = await AiCall(HttpMethod.Get, "/api/ai/conversations", null, buyerT);
+            var knownSessions = new HashSet<string>();
+            if (Data(convBefore).ValueKind == JsonValueKind.Object && Data(convBefore).TryGetProperty("items", out var cb))
+                foreach (var it in cb.EnumerateArray())
+                    if (it.TryGetProperty("sessionId", out var sid)) knownSessions.Add(sid.GetString() ?? "");
+
+            var (chatStatus, chatBody) = await AiCall(HttpMethod.Post, "/api/ai/chat", new { message = "平台现在有多少注册用户" }, buyerT);
+            var chatAnswer = Data(chatBody).ValueKind == JsonValueKind.Object && Data(chatBody).TryGetProperty("reply", out var rep) ? rep.GetString() : null;
+            var chatOk = chatStatus == HttpStatusCode.OK && chatAnswer != null && chatAnswer.Contains("平台");
+            Check("AI 客服完成两轮工具调用并回答", chatOk, $"status={(int)chatStatus} answer={chatAnswer}");
+
+            // 清理: 删除本次产生的会话
+            var (_, convAfter) = await AiCall(HttpMethod.Get, "/api/ai/conversations", null, buyerT);
+            if (Data(convAfter).ValueKind == JsonValueKind.Object && Data(convAfter).TryGetProperty("items", out var ca))
+                foreach (var it in ca.EnumerateArray())
+                {
+                    var sid2 = it.TryGetProperty("sessionId", out var s2) ? s2.GetString() : null;
+                    if (sid2 != null && !knownSessions.Contains(sid2) && it.TryGetProperty("id", out var cid))
+                        await AiCall(HttpMethod.Delete, "/api/ai/conversations/" + cid.GetInt64(), null, buyerT);
+                }
+
+            // 4) 数据问答 (管理员): 同样走工具调用协议
+            var (askStatus, askBody) = await AiCall(HttpMethod.Post, "/api/ai/ask", new { question = "平台有多少用户" }, adminT);
+            var askAnswer = Data(askBody).ValueKind == JsonValueKind.Object && Data(askBody).TryGetProperty("answer", out var ans) ? ans.GetString() : null;
+            Check("AI 数据问答完成工具调用并回答", askStatus == HttpStatusCode.OK && askAnswer != null && askAnswer.Contains("平台"),
+                $"status={(int)askStatus} answer={askAnswer}");
+
+            // 5) Mock 校验: 若 API 漏传 tool_call_id, Mock 已返回 400 -> 上面的 chat/ask 必然失败
+            Check("Mock LLM 收到过合法的 tool 结果消息", mock.SawValidToolMessage);
+        }
+    }
+    catch (Exception ex)
+    {
+        Check("AI E2E 流程", false, ex.Message);
+    }
+    finally
+    {
+        aiHttp.Dispose();
+        if (api is { HasExited: false }) { try { api!.Kill(entireProcessTree: true); } catch { } }
+        api?.Dispose();
+        mock.Stop();
+    }
+}
+
 Console.WriteLine($"\n结果: {passed} 通过, {failed} 失败");
 return failed == 0 ? 0 : 1;
+
+// ---------- 内置 Mock OpenAI 兼容服务 ----------
+public class MockLlmServer
+{
+    private readonly int _port;
+    private HttpListener? _listener;
+    private CancellationTokenSource? _cts;
+
+    public bool SawValidToolMessage { get; private set; }
+
+    public MockLlmServer(int port) => _port = port;
+
+    public void Start()
+    {
+        _listener = new HttpListener();
+        _listener.Prefixes.Add($"http://127.0.0.1:{_port}/v1/chat/completions/");
+        _listener.Start();
+        _cts = new CancellationTokenSource();
+        _ = Task.Run(() => Loop(_cts.Token));
+    }
+
+    public void Stop()
+    {
+        try { _cts?.Cancel(); _listener?.Stop(); _listener?.Close(); } catch { }
+    }
+
+    private async Task Loop(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            HttpListenerContext ctx;
+            try { ctx = await _listener!.GetContextAsync(); }
+            catch { break; }
+            try
+            {
+                using var reader = new StreamReader(ctx.Request.InputStream);
+                var reqText = await reader.ReadToEndAsync();
+                var body = JsonDocument.Parse(reqText).RootElement;
+                var hasTools = body.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() > 0;
+                var messages = body.GetProperty("messages");
+                JsonElement? toolMsg = null;
+                foreach (var m in messages.EnumerateArray())
+                    if (m.TryGetProperty("role", out var r) && r.GetString() == "tool") toolMsg = m;
+
+                string content;
+                if (toolMsg is JsonElement tm)
+                {
+                    var callIdOk = tm.TryGetProperty("tool_call_id", out var tcid) && !string.IsNullOrWhiteSpace(tcid.GetString());
+                    if (!callIdOk)
+                    {
+                        await Write(ctx, 400, "{\"error\":{\"message\":\"missing tool_call_id\"}}");
+                        continue;
+                    }
+                    SawValidToolMessage = true;
+                    content = "根据工具查询结果, 平台注册用户数据如下: 已完成统计。";
+                }
+                else if (hasTools)
+                {
+                    content = "";
+                    var resp = new
+                    {
+                        choices = new[]
+                        {
+                            new
+                            {
+                                index = 0,
+                                message = new
+                                {
+                                    role = "assistant",
+                                    content = "",
+                                    tool_calls = new[]
+                                    {
+                                        new
+                                        {
+                                            id = "call_mock_1",
+                                            type = "function",
+                                            function = new { name = "get_platform_stats", arguments = "{}" },
+                                        },
+                                    },
+                                },
+                                finish_reason = "tool_calls",
+                            },
+                        },
+                    };
+                    await Write(ctx, 200, JsonSerializer.Serialize(resp));
+                    continue;
+                }
+                else
+                {
+                    var lastUser = "";
+                    foreach (var m in messages.EnumerateArray())
+                        if (m.TryGetProperty("role", out var r) && r.GetString() == "user")
+                            lastUser = m.TryGetProperty("content", out var c) ? c.GetString() ?? "" : "";
+                    if (lastUser.Contains("请生成"))
+                        content = "{\"description\":\"优质农产品, 欢迎选购。\",\"suggestedCategory\":\"粮食\",\"priceMin\":1.2,\"priceMax\":1.5,\"priceUnit\":\"元/斤\",\"titleSuggestions\":[\"优质小麦 8000斤 出售\",\"新收小麦 整批出让\",\"自产小麦 价格可议\"]}";
+                    else
+                        content = "{\"summary\":\"平台运行平稳。\",\"highlights\":[\"注册用户持续增长\"],\"anomalies\":[\"今日成交为 0, 需关注\"]}";
+                }
+
+                var final = new { choices = new[] { new { index = 0, message = new { role = "assistant", content }, finish_reason = "stop" } } };
+                await Write(ctx, 200, JsonSerializer.Serialize(final));
+            }
+            catch
+            {
+                try { await Write(ctx, 500, "{\"error\":{\"message\":\"mock failure\"}}"); } catch { }
+            }
+        }
+    }
+
+    private static async Task Write(HttpListenerContext ctx, int status, string json)
+    {
+        ctx.Response.StatusCode = status;
+        ctx.Response.ContentType = "application/json";
+        var buf = Encoding.UTF8.GetBytes(json);
+        await ctx.Response.OutputStream.WriteAsync(buf);
+        ctx.Response.Close();
+    }
+}
+
