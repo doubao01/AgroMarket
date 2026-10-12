@@ -202,6 +202,7 @@ export default {
           const hit = this.categories.find(c => c.name === res.suggestedCategory)
           if (hit) this.pickCat(hit)
         }
+        this.offerTitles(res.titleSuggestions)
         uni.showToast({ title: '已生成，请检查', icon: 'none' })
       } catch (e) {
         uni.showToast({ title: (e && e.msg) || 'AI 未配置', icon: 'none' })
@@ -211,6 +212,14 @@ export default {
     },
     onTownChange(e) { this.regionLabel = e.townName; this.form.countyId = e.countyId },
     onVillageChange(e) { if (e.villageName) this.regionLabel += ' ' + e.villageName },
+    offerTitles(list) {
+      if (!list || !list.length) return
+      uni.showActionSheet({
+        itemList: list.slice(0, 3),
+        success: (r) => { this.form.title = list[r.tapIndex] },
+        fail: () => {},
+      })
+    },
     chooseImages() {
       const remain = 9 - this.form.images.length
       uni.chooseImage({

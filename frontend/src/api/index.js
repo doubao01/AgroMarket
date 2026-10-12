@@ -140,6 +140,7 @@ export const dashboardApi = {
   category: () => http.get('/api/admin/dashboard/category', {}, { auth: true }),
   region: () => http.get('/api/admin/dashboard/region', {}, { auth: true }),
   users: () => http.get('/api/admin/dashboard/users', {}, { auth: true }),
+  userTrend: (range) => http.get('/api/admin/dashboard/users/trend', { range }, { auth: true }),
   chat: (range) => http.get('/api/admin/dashboard/chat', { range }, { auth: true }),
 }
 

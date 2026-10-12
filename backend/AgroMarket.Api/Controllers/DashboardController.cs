@@ -36,6 +36,10 @@ public class DashboardController : ControllerBase
     public async Task<ActionResult<ApiResponse<List<RoleStatDto>>>> Users()
         => Ok(ApiResponse<List<RoleStatDto>>.Ok(await _dash.GetUsersAsync(Uid)));
 
+    [HttpGet("users/trend")]
+    public async Task<ActionResult<ApiResponse<List<UserTrendPointDto>>>> UsersTrend([FromQuery] string? range)
+        => Ok(ApiResponse<List<UserTrendPointDto>>.Ok(await _dash.GetUsersTrendAsync(Uid, range)));
+
     [HttpGet("chat")]
     public async Task<ActionResult<ApiResponse<List<ChatActivityDto>>>> Chat([FromQuery] string? range)
         => Ok(ApiResponse<List<ChatActivityDto>>.Ok(await _dash.GetChatActivityAsync(Uid, range)));

@@ -28,10 +28,11 @@ public record AiAssistRequest(
 
 /// <summary>内容发布辅助响应。</summary>
 public record AiAssistResponse(
-    string Description, string SuggestedCategory, decimal? PriceMin, decimal? PriceMax, string? PriceUnit);
+    string Description, string SuggestedCategory, decimal? PriceMin, decimal? PriceMax, string? PriceUnit,
+    List<string>? TitleSuggestions = null);
 
 /// <summary>大屏智能解读响应。</summary>
-public record AiInsightResponse(string Summary, List<string> Highlights);
+public record AiInsightResponse(string Summary, List<string> Highlights, List<string>? Anomalies = null);
 
 /// <summary>大屏数据问答请求/响应。</summary>
 public record AiAskRequest(string Question);

@@ -162,6 +162,31 @@ public class DashboardService
         });
     }
 
+    /// <summary>用户趋势 (按日新增与当日活跃)。</summary>
+    public async Task<List<Dtos.UserTrendPointDto>> GetUsersTrendAsync(long operatorId, string? range)
+    {
+        var days = range switch { "7d" => 7, "90d" => 90, _ => 30 };
+        using var conn = _db.Create();
+        await EnsureAdminAsync(conn, operatorId);
+        return await CachedAsync($"dash:usertrend:{days}", async () =>
+        {
+            var rows = await conn.QueryAsync<(string Date, long NewUsers, long ActiveUsers)>(
+                @"WITH RECURSIVE d AS (
+                       SELECT CURDATE() - INTERVAL @d-1 DAY AS dt
+                       UNION ALL SELECT dt + INTERVAL 1 DAY FROM d WHERE dt < CURDATE()
+                   )
+                   SELECT DATE_FORMAT(d.dt,'%Y-%m-%d') Date,
+                          COUNT(u.id) NewUsers,
+                          COUNT(u2.id) ActiveUsers
+                   FROM d
+                   LEFT JOIN sys_user u ON DATE(u.created_at)=d.dt
+                   LEFT JOIN sys_user u2 ON DATE(u2.last_login_at)=d.dt
+                   GROUP BY d.dt ORDER BY d.dt",
+                new { d = days });
+            return rows.Select(r => new Dtos.UserTrendPointDto(r.Date, r.NewUsers, r.ActiveUsers)).ToList();
+        });
+    }
+
     /// <summary>消息活跃 (最近 N 天消息量与会话数)。</summary>
     public async Task<List<Dtos.ChatActivityDto>> GetChatActivityAsync(long operatorId, string? range)
     {

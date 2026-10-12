@@ -64,13 +64,23 @@
 
     <!-- 用户结构 -->
     <view class="panel">
-      <view class="panel-head"><text class="panel-title">用户结构</text></view>
+      <view class="panel-head">
+        <text class="panel-title">用户结构</text>
+        <view class="range-tabs">
+          <text v-for="r in ranges" :key="r.key" class="range-tab"
+            :class="{ active: userTrendRange === r.key }" @tap="switchUserTrendRange(r.key)">{{ r.label }}</text>
+        </view>
+      </view>
       <view class="chips">
         <view class="chip" v-for="u in users" :key="u.role">
           <text class="chip-role">{{ roleLabel(u.role) }}</text>
           <text class="chip-val">{{ u.count }}</text>
         </view>
       </view>
+      <u-chart
+        v-if="userTrend.length"
+        chart-type="mix" :categories="userTrendCats" :series="userTrendSeries" :dark="dark" :height="220"
+      />
     </view>
 
     <!-- 消息活跃 -->
@@ -92,6 +102,7 @@
       <view v-if="insightLoading" class="empty">分析中...</view>
       <view v-else-if="insight">
         <view class="ai-summary">{{ insight.summary }}</view>
+        <view class="ai-anomaly" v-for="(a, i) in insight.anomalies || []" :key="'a' + i">! {{ a }}</view>
         <view class="ai-hl" v-for="(h, i) in insight.highlights" :key="i">· {{ h }}</view>
       </view>
       <view v-else class="empty">点击「生成解读」由 AI 分析当前数据</view>
@@ -126,6 +137,8 @@ export default {
       category: [],
       regionTop: [],
       users: [],
+      userTrend: [],
+      userTrendRange: '30d',
       chatActivity: [],
       insight: null,
       insightLoading: false,
@@ -154,6 +167,13 @@ export default {
     chatCats() { return this.chatActivity.map(p => this.shortDate(p.date)) },
     chatSeries() {
       return [{ name: '消息数', type: 'column', data: this.chatActivity.map(p => p.messageCount || 0) }]
+    },
+    userTrendCats() { return this.userTrend.map(p => this.shortDate(p.date)) },
+    userTrendSeries() {
+      return [
+        { name: '新增用户', type: 'line', data: this.userTrend.map(p => p.newUsers || 0) },
+        { name: '活跃用户', type: 'line', data: this.userTrend.map(p => p.activeUsers || 0) },
+      ]
     },
     regionMax() { return Math.max(1, ...this.regionTop.map(r => r.supplyCount + r.demandCount)) },
     trendTotal() { return this.trend.reduce((s, p) => s + (p.orderCount || 0), 0) },
@@ -187,7 +207,7 @@ export default {
           .sort((a, b) => (b.supplyCount + b.demandCount) - (a.supplyCount + a.demandCount))
           .slice(0, 8)
         this.users = us || []
-        await Promise.all([this.loadTrend(), this.loadChat()])
+        await Promise.all([this.loadTrend(), this.loadChat(), this.loadUserTrend()])
       } catch (e) {
         if (!silent) uni.showToast({ title: (e && e.msg) || '加载失败', icon: 'none' })
       } finally {
@@ -211,6 +231,13 @@ export default {
     },
     async loadChat() {
       this.chatActivity = (await dashboardApi.chat(this.trendRange)) || []
+    },
+    async loadUserTrend() {
+      this.userTrend = (await dashboardApi.userTrend(this.userTrendRange)) || []
+    },
+    switchUserTrendRange(key) {
+      this.userTrendRange = key
+      this.loadUserTrend()
     },
     switchTrendRange(key) {
       this.trendRange = key
@@ -296,6 +323,7 @@ export default {
 .ai-panel { }
 .ai-btn { font-size: 24rpx; color: #2e8b57; border: 1rpx solid #2e8b57; border-radius: 20rpx; padding: 6rpx 20rpx; }
 .ai-summary { font-size: 28rpx; color: #22322a; font-weight: 600; margin-bottom: 14rpx; }
+.ai-anomaly { font-size: 25rpx; color: #d47b1f; line-height: 1.6; font-weight: 600; }
 .ai-hl { font-size: 25rpx; color: #4a5a50; line-height: 1.6; }
 .ask-box { display: flex; align-items: center; margin-top: 20rpx; }
 .ask-input { flex: 1; background: #f0f3f1; border-radius: 12rpx; padding: 16rpx 20rpx; font-size: 25rpx; }
@@ -325,6 +353,7 @@ export default {
 .dash.dark .chip-val { color: #5fd694; }
 .dash.dark .empty { color: #6f8578; }
 .dash.dark .ai-summary { color: #e6f2ea; }
+.dash.dark .ai-anomaly { color: #f2a45c; }
 .dash.dark .ai-hl { color: #b6cabf; }
 .dash.dark .ask-input { background: #1e3326; color: #e6f2ea; }
 .dash.dark .ai-answer { background: #1e3326; color: #d5e5db; }

@@ -28,7 +28,8 @@ public class AiInsightService
 
     private const string InsightPrompt =
         "你是农产品交易平台的数据分析师。根据提供的大屏统计快照, 用中文生成简短解读。\n" +
-        "输出 JSON: summary(一句话总体结论, 60字内), highlights(3条要点数组, 每条40字内, 必须引用具体数字)。\n" +
+        "输出 JSON: summary(一句话总体结论, 60字内), highlights(3条要点数组, 每条40字内, 必须引用具体数字), " +
+        "anomalies(数据异常提醒数组, 最多2条, 每条40字内, 指出骤增/骤降/为零等异常, 无异常时给空数组)。\n" +
         "只依据快照数据, 不得编造; 不得给出投资建议。";
 
     public async Task<AiInsightResponse> InsightAsync(long adminId, CancellationToken ct = default)
@@ -57,7 +58,7 @@ public class AiInsightService
     {
         var json = AiAssistService.ExtractJson(content);
         if (json is null)
-            return new AiInsightResponse(content.Trim(), new List<string>());
+            return new AiInsightResponse(content.Trim(), new List<string>(), new List<string>());
         try
         {
             using var doc = System.Text.Json.JsonDocument.Parse(json);
@@ -68,11 +69,16 @@ public class AiInsightService
                 foreach (var item in h.EnumerateArray())
                     if (item.ValueKind == System.Text.Json.JsonValueKind.String)
                         highlights.Add(item.GetString()!);
-            return new AiInsightResponse(summary, highlights);
+            var anomalies = new List<string>();
+            if (root.TryGetProperty("anomalies", out var a) && a.ValueKind == System.Text.Json.JsonValueKind.Array)
+                foreach (var item in a.EnumerateArray())
+                    if (item.ValueKind == System.Text.Json.JsonValueKind.String)
+                        anomalies.Add(item.GetString()!);
+            return new AiInsightResponse(summary, highlights, anomalies);
         }
         catch
         {
-            return new AiInsightResponse(content.Trim(), new List<string>());
+            return new AiInsightResponse(content.Trim(), new List<string>(), new List<string>());
         }
     }
 
