@@ -44,6 +44,9 @@ public class FederationOptions
     /// <summary>签发的节点令牌有效期 (天)。</summary>
     public int TokenDays { get; set; } = 365;
 
+    /// <summary>跨节点汇聚是否把本节点自身指标也纳入"全景" (默认开启)。</summary>
+    public bool IncludeSelfInAggregate { get; set; } = true;
+
     /// <summary>令牌/身份强校验需要的字段是否齐备。</summary>
     public bool HasIdentity => !string.IsNullOrWhiteSpace(NodeCode) && !string.IsNullOrWhiteSpace(NodeName)
         && System.Text.Encoding.UTF8.GetByteCount(SharedKey ?? "") >= 32;

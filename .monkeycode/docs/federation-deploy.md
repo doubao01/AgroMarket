@@ -39,6 +39,7 @@
 | `RecordWindowHours` | `Federation__RecordWindowHours` | `24` | 明细上报时间窗（小时）。 |
 | `MaxRecordsPerPush` | `Federation__MaxRecordsPerPush` | `500` | 单批明细上限。 |
 | `TokenDays` | `Federation__TokenDays` | `365` | 签发节点令牌的有效期（天）。 |
+| `IncludeSelfInAggregate` | `Federation__IncludeSelfInAggregate` | `true` | 跨节点汇聚是否纳入本节点自身指标，形成"本节点 + 对端"全景；置 `false` 则仅汇总已接收的对端数据。 |
 
 **启动强校验**：当 `Enabled=true` 时，`NodeCode` / `NodeName` 非空且 `SharedKey` ≥32 字节，否则 API **启动即失败**（避免带着半配置上线）。因此多级部署时，先把身份与密钥配置齐全再启动。
 

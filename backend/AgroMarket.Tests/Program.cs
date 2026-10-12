@@ -1186,6 +1186,9 @@ try
     var (aggS, aggB) = await Call(HttpMethod.Get, "/api/admin/federation/aggregate?range=7d", null, adminToken);
     var aggNodes = Data(aggB).TryGetProperty("nodeCount", out var an) ? an.GetInt32() : -1;
     Check("跨节点汇聚返回结果", aggS == HttpStatusCode.OK && Code(aggB) == 0 && aggNodes >= 1, $"nodeCount={aggNodes}");
+    var aggHasSelf = Data(aggB).TryGetProperty("byNode", out var aggByNode) && aggByNode.ValueKind == JsonValueKind.Array
+        && aggByNode.EnumerateArray().Any(x => x.TryGetProperty("sourceNodeCode", out var sc) && sc.GetString() == "node-xixian");
+    Check("跨节点汇聚默认纳入本节点(IncludeSelfInAggregate)", aggHasSelf, "byNode 缺少本节点 node-xixian");
 
     // 13.8 脱敏校验: 落库明细标题已去手机号, 全部明细无原始手机号
     var (mrS, mrB) = await Call(HttpMethod.Get, "/api/admin/federation/records?source=node-xixian&type=SUPPLY&days=7&limit=200", null, adminToken);

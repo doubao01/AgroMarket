@@ -138,3 +138,13 @@ This file records user instructions, preferences, and teachings for reference in
   - **本机两实例演示** `scripts/federation-demo.sh`：用 root socket（`mysql -uroot`）重建 `agro_market_demo_a`/`_b`（sed 替换库名跑全量迁移），在 8090/8091 各起一个 `dotnet <dll>`（Development，env 注入 `ConnectionStrings__Default` 与 `Federation__*`），跑 bootstrap 后验证双向汇聚。用法 `sh scripts/federation-demo.sh [run|stop|verify]`。**注意**：dotnet 子进程会随宿主（后台终端）退出被回收；`stop` 只按记录的 PID kill，`pkill -f AgroMarket.Api.dll` 已移除（避免误伤 8080 开发实例）。演示库与 8080 开发实例（`agro_market`）互不影响。
   - 前端联动页对端节点按层级分组：`federation.vue` 的 `nodeGroups` computed（`PROVINCE`/`CITY`/`COUNTY` + 兜底 `OTHER`，空组过滤）+ `.group-title` 样式。
   - 文档：`.monkeycode/docs/federation-design.md`（设计）、`.monkeycode/docs/federation-deploy.md`（部署手册，含配置表/迁移/手工与容器部署/扩容/排障对照表）。
+
+[Project Knowledge Summary]
+- Date: 2026-10-12
+- Context: Discovered by Agent while adding "include self in panorama aggregate" switch per user request
+- Category: Workflow & Collaboration / Environment Configuration
+- Instructions:
+  - 新配置 `Federation:IncludeSelfInAggregate`（`FederationOptions`，**默认 true**；env `Federation__IncludeSelfInAggregate`）：开启时 `GET api/admin/federation/aggregate` 会把**本节点自身**指标并入结果（`byNode` 增一条 `sourceNodeCode=本节点 NodeCode`，`byDay` 合并本节点按日指标，`nodeCount` 含自己），形成"本节点+对端"全景。
+  - 防双计：若 `byNode` 已存在同编码（该节点也曾作为对端上报过自身数据），则**跳过**叠加。
+  - `FederationSnapshotBuilder.BuildMetricsAsync` 增加 `(DateTime from, DateTime to)` 重载（闭区间、含无数据日），供 aggregate 复用；原 `BuildMetricsAsync(int days)` 改为委托它。`FederationAdminService` 因此新增 `FederationSnapshotBuilder` 依赖（DI 中已 Scoped 注册）。
+  - 集成测试新增断言"跨节点汇聚默认纳入本节点(IncludeSelfInAggregate)"（第 13 段，现 144 断言）；`scripts/federation-demo.sh` 的验证改为断言"全景含本节点与对端两个来源"。
