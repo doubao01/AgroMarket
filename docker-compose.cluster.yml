@@ -1,0 +1,177 @@
+# =====================================================================
+# AgroMarket 多级（省/市/县）节点集群编排
+#   - 每个节点 = 一套独立 { MySQL + API }，彼此对等（扁平拓扑）
+#   - 节点间通过 Docker 网络内服务名互访（api-henan / api-xixian / ...）
+#   - 首启自动按序执行 database/0*.sql 全部迁移（含 07_federation）
+#   - federation-bootstrap 一次性完成"互相登记对端 + 令牌就绪 + 首次同步"
+#
+# 用法:
+#   cp .env.cluster.example .env.cluster && 编辑其中密钥
+#   docker compose -f docker-compose.cluster.yml --env-file .env.cluster up -d --build
+#   docker compose -f docker-compose.cluster.yml --env-file .env.cluster logs -f federation-bootstrap
+#
+# 新增一个县级节点: 复制 api-xixian + db-xixian 两块, 改 NODE_CODE/端口/库卷名,
+#   并在 federation-bootstrap 的 FED_ALL 里追加该节点描述即可。
+# =====================================================================
+
+name: agromarket-cluster
+
+x-db-common: &db-common
+  image: mysql:8.0
+  restart: unless-stopped
+  command:
+    - "--character-set-server=utf8mb4"
+    - "--collation-server=utf8mb4_unicode_ci"
+    - "--default-authentication-plugin=mysql_native_password"
+  environment:
+    MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    MYSQL_DATABASE: agro_market
+    MYSQL_USER: ${MYSQL_USER:-agromarket}
+    MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+
+x-api-env: &api-env
+  ASPNETCORE_ENVIRONMENT: Production
+  ASPNETCORE_URLS: http://+:8080
+  Jwt__SecretKey: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is required (>=32 bytes)}
+  Jwt__ExpireHours: "168"
+  Sms__DevMode: "false"
+  Payment__MockEnabled: "false"
+  # ---- 联动公共配置: SharedKey 必须所有节点一致 ----
+  Federation__Enabled: "true"
+  Federation__SharedKey: ${FEDERATION_SHARED_KEY:?FEDERATION_SHARED_KEY is required (>=32 bytes)}
+  Federation__AutoSync: "true"
+  Federation__SyncIntervalMinutes: "${FEDERATION_SYNC_INTERVAL_MINUTES:-30}"
+  Federation__BackfillDays: "1"
+  Federation__RecordWindowHours: "24"
+  CorsOrigins__0: ${CORS_ORIGIN:-http://localhost:5173}
+
+x-api-common: &api-common
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  restart: unless-stopped
+
+services:
+  # ================= 省级节点 =================
+  db-henan:
+    <<: *db-common
+    container_name: agromarket-db-henan
+    volumes:
+      - db_henan:/var/lib/mysql
+      - ./database:/migrations:ro
+      - ./database/docker-init.sh:/docker-entrypoint-initdb.d/00-migrate.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  api-henan:
+    <<: *api-common
+    container_name: agromarket-api-henan
+    depends_on:
+      db-henan:
+        condition: service_healthy
+    environment:
+      <<: *api-env
+      ConnectionStrings__Default: "Server=db-henan;Port=3306;Database=agro_market;User=${MYSQL_USER:-agromarket};Password=${MYSQL_PASSWORD};DefaultCommandTimeout=30;"
+      Federation__NodeCode: node-henan
+      Federation__NodeName: 河南省农贸通
+      Federation__Level: PROVINCE
+      Federation__RegionCode: "410000"
+    ports:
+      - "${API_PORT_HENAN:-8080}:8080"
+    volumes:
+      - api_uploads_henan:/app/uploads
+
+  # ================= 息县节点 =================
+  db-xixian:
+    <<: *db-common
+    container_name: agromarket-db-xixian
+    volumes:
+      - db_xixian:/var/lib/mysql
+      - ./database:/migrations:ro
+      - ./database/docker-init.sh:/docker-entrypoint-initdb.d/00-migrate.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  api-xixian:
+    <<: *api-common
+    container_name: agromarket-api-xixian
+    depends_on:
+      db-xixian:
+        condition: service_healthy
+    environment:
+      <<: *api-env
+      ConnectionStrings__Default: "Server=db-xixian;Port=3306;Database=agro_market;User=${MYSQL_USER:-agromarket};Password=${MYSQL_PASSWORD};DefaultCommandTimeout=30;"
+      Federation__NodeCode: node-xixian
+      Federation__NodeName: 息县农贸通
+      Federation__Level: COUNTY
+      Federation__RegionCode: "411528"
+    ports:
+      - "${API_PORT_XIXIAN:-8081}:8080"
+    volumes:
+      - api_uploads_xixian:/app/uploads
+
+  # ================= 淮阳县节点 =================
+  db-huaiyang:
+    <<: *db-common
+    container_name: agromarket-db-huaiyang
+    volumes:
+      - db_huaiyang:/var/lib/mysql
+      - ./database:/migrations:ro
+      - ./database/docker-init.sh:/docker-entrypoint-initdb.d/00-migrate.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  api-huaiyang:
+    <<: *api-common
+    container_name: agromarket-api-huaiyang
+    depends_on:
+      db-huaiyang:
+        condition: service_healthy
+    environment:
+      <<: *api-env
+      ConnectionStrings__Default: "Server=db-huaiyang;Port=3306;Database=agro_market;User=${MYSQL_USER:-agromarket};Password=${MYSQL_PASSWORD};DefaultCommandTimeout=30;"
+      Federation__NodeCode: node-huaiyang
+      Federation__NodeName: 淮阳县农贸通
+      Federation__Level: COUNTY
+      Federation__RegionCode: "411626"
+    ports:
+      - "${API_PORT_HUAIYANG:-8082}:8080"
+    volumes:
+      - api_uploads_huaiyang:/app/uploads
+
+  # ================= 联动引导（一次性） =================
+  # 等待各节点就绪 -> 互相登记对端（baseUrl 用网络内服务名）-> 触发首轮推/拉
+  federation-bootstrap:
+    image: curlimages/curl:8.10.1
+    container_name: agromarket-fed-bootstrap
+    depends_on:
+      - api-henan
+      - api-xixian
+      - api-huaiyang
+    environment:
+      # 格式: nodeCode|baseUrl(网内)|level|name|regionCode，用 ; 分隔；baseUrl 必须是对端可达的地址
+      FED_ALL: "node-henan|http://api-henan:8080|PROVINCE|河南省农贸通|410000;node-xixian|http://api-xixian:8080|COUNTY|息县农贸通|411528;node-huaiyang|http://api-huaiyang:8080|COUNTY|淮阳县农贸通|411626"
+      FED_ADMIN_PHONE: "13800000001"
+      FED_ADMIN_PASSWORD: "Abc123456"
+      FED_SYNC_ON_BOOTSTRAP: "true"
+    volumes:
+      - ./scripts/federation-bootstrap.sh:/bootstrap.sh:ro
+    entrypoint: ["sh", "/bootstrap.sh"]
+    restart: "no"
+
+volumes:
+  db_henan:
+  db_xixian:
+  db_huaiyang:
+  api_uploads_henan:
+  api_uploads_xixian:
+  api_uploads_huaiyang:
