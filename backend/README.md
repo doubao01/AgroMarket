@@ -126,7 +126,7 @@ cd backend && dotnet run --project AgroMarket.Api
 
 ### 数据大屏统计（仅管理员）
 
-`DashboardService`（`Services/DashboardService.cs`）提供聚合统计，真实成交口径与 `AdminService` 一致（`status='COMPLETED' AND is_demo=0` 且存在非 MOCK/OFFLINE/DEMO 支付记录）。
+`DashboardService`（`Services/DashboardService.cs`）提供聚合统计，真实成交口径与 `AdminService` 一致（`status='COMPLETED' AND is_demo=0` 且存在非 MOCK/OFFLINE/DEMO 支付记录）。统计结果做 **30s 内存短缓存**（`IMemoryCache`，管理员校验后再读缓存）。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -154,7 +154,7 @@ cd backend && dotnet run --project AgroMarket.Api
 | POST | `/api/ai/insight` | 大屏智能解读（仅管理员） |
 | POST | `/api/ai/ask` | 大屏数据问答（仅管理员，数字必须来自工具） |
 
-AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、供应搜索、需求搜索、我的订单。严禁任意 SQL、下单/支付等写操作与跨用户隐私数据。设计详见 `当前工作区/.monkeycode/docs/ai-dashboard-design.md`。
+AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡镇地区分布、供应搜索、需求搜索、我的订单。工具调用遵循 OpenAI 协议（回传 assistant `tool_calls` 与 tool `tool_call_id`），轮次上限 3。AI 端点均做输入长度上限与按用户频控（`AiRateLimiter`）。严禁任意 SQL、下单/支付等写操作与跨用户隐私数据。设计详见 `当前工作区/.monkeycode/docs/ai-dashboard-design.md`。
 
 ## 文件上传（断点续传）
 - `POST /api/files/upload/init`：初始化分片会话，返回 `uploadId`、`chunkSize`、`totalChunks`。

@@ -1,20 +1,37 @@
 using System.Data;
 using AgroMarket.Api.Common;
 using Dapper;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace AgroMarket.Api.Services;
 
-/// <summary>数据大屏统计服务。真实成交口径与 AdminService 保持一致 (排除演示单与 MOCK 支付)。</summary>
+/// <summary>数据大屏统计服务。真实成交口径与 AdminService 保持一致 (排除演示单与 MOCK 支付)。统计结果做 30s 内存短缓存。</summary>
 public class DashboardService
 {
-    private readonly IDbConnectionFactory _db;
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
 
-    public DashboardService(IDbConnectionFactory db) => _db = db;
+    private readonly IDbConnectionFactory _db;
+    private readonly IMemoryCache _cache;
+
+    public DashboardService(IDbConnectionFactory db, IMemoryCache cache)
+    {
+        _db = db;
+        _cache = cache;
+    }
 
     private static async Task EnsureAdminAsync(IDbConnection conn, long userId)
     {
         var isAdmin = await conn.ExecuteScalarAsync<bool>("SELECT role='ADMIN' FROM sys_user WHERE id=@id", new { id = userId });
         if (!isAdmin) throw new BizException("需要管理员权限", ErrorCodes.Forbidden);
+    }
+
+    /// <summary>管理员校验通过后再查缓存, 保证越权不被缓存绕过。</summary>
+    private async Task<T> CachedAsync<T>(string key, Func<Task<T>> factory)
+    {
+        if (_cache.TryGetValue(key, out T? cached) && cached is not null) return cached;
+        var value = await factory();
+        _cache.Set(key, value, CacheTtl);
+        return value;
     }
 
     // 真实成交订单的公共谓词
@@ -28,33 +45,36 @@ public class DashboardService
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
 
-        var users = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM sys_user");
-        var activeUsers = await conn.ExecuteScalarAsync<long>(
-            "SELECT COUNT(*) FROM sys_user WHERE last_login_at > DATE_SUB(NOW(3), INTERVAL 30 DAY)");
-        var supplies = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM product_supply WHERE status='ACTIVE'");
-        var demands = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM purchase_demand WHERE status='ACTIVE'");
+        return await CachedAsync("dash:overview", async () =>
+        {
+            var users = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM sys_user");
+            var activeUsers = await conn.ExecuteScalarAsync<long>(
+                "SELECT COUNT(*) FROM sys_user WHERE last_login_at > DATE_SUB(NOW(3), INTERVAL 30 DAY)");
+            var supplies = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM product_supply WHERE status='ACTIVE'");
+            var demands = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM purchase_demand WHERE status='ACTIVE'");
 
-        var orders = await conn.ExecuteScalarAsync<long>($"SELECT COUNT(DISTINCT o.id) FROM trade_order o WHERE {RealOrderWhere}");
-        var amount = await conn.ExecuteScalarAsync<decimal>(
-            $"SELECT COALESCE(SUM(o.total_amount),0) FROM trade_order o WHERE {RealOrderWhere}");
+            var orders = await conn.ExecuteScalarAsync<long>($"SELECT COUNT(DISTINCT o.id) FROM trade_order o WHERE {RealOrderWhere}");
+            var amount = await conn.ExecuteScalarAsync<decimal>(
+                $"SELECT COALESCE(SUM(o.total_amount),0) FROM trade_order o WHERE {RealOrderWhere}");
 
-        var todayOrders = await conn.ExecuteScalarAsync<long>(
-            $"SELECT COUNT(DISTINCT o.id) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= CURDATE()");
-        var todayAmount = await conn.ExecuteScalarAsync<decimal>(
-            $"SELECT COALESCE(SUM(o.total_amount),0) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= CURDATE()");
+            var todayOrders = await conn.ExecuteScalarAsync<long>(
+                $"SELECT COUNT(DISTINCT o.id) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= CURDATE()");
+            var todayAmount = await conn.ExecuteScalarAsync<decimal>(
+                $"SELECT COALESCE(SUM(o.total_amount),0) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= CURDATE()");
 
-        var weekOrders = await conn.ExecuteScalarAsync<long>(
-            $"SELECT COUNT(DISTINCT o.id) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)");
-        var weekAmount = await conn.ExecuteScalarAsync<decimal>(
-            $"SELECT COALESCE(SUM(o.total_amount),0) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)");
+            var weekOrders = await conn.ExecuteScalarAsync<long>(
+                $"SELECT COUNT(DISTINCT o.id) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)");
+            var weekAmount = await conn.ExecuteScalarAsync<decimal>(
+                $"SELECT COALESCE(SUM(o.total_amount),0) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)");
 
-        var demoOrders = await conn.ExecuteScalarAsync<long>(
-            "SELECT COUNT(*) FROM trade_order WHERE status='COMPLETED' AND is_demo=1");
-        var demoAmount = await conn.ExecuteScalarAsync<decimal>(
-            "SELECT COALESCE(SUM(total_amount),0) FROM trade_order WHERE status='COMPLETED' AND is_demo=1");
+            var demoOrders = await conn.ExecuteScalarAsync<long>(
+                "SELECT COUNT(*) FROM trade_order WHERE status='COMPLETED' AND is_demo=1");
+            var demoAmount = await conn.ExecuteScalarAsync<decimal>(
+                "SELECT COALESCE(SUM(total_amount),0) FROM trade_order WHERE status='COMPLETED' AND is_demo=1");
 
-        return new Dtos.DashboardOverviewDto(users, activeUsers, supplies, demands,
-            orders, amount, todayOrders, todayAmount, weekOrders, weekAmount, demoOrders, demoAmount);
+            return new Dtos.DashboardOverviewDto(users, activeUsers, supplies, demands,
+                orders, amount, todayOrders, todayAmount, weekOrders, weekAmount, demoOrders, demoAmount);
+        });
     }
 
     /// <summary>成交趋势 (按天, 最近 N 天, range=7d/30d/90d)。</summary>
@@ -64,20 +84,23 @@ public class DashboardService
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
 
-        // 生成日期序列左连接成交数据, 补齐无成交的日期
-        var rows = await conn.QueryAsync<(string Date, long OrderCount, decimal DealAmount)>(
-            $@"WITH RECURSIVE d AS (
-                   SELECT CURDATE() - INTERVAL @d-1 DAY AS dt
-                   UNION ALL SELECT dt + INTERVAL 1 DAY FROM d WHERE dt < CURDATE()
-               )
-               SELECT DATE_FORMAT(d.dt,'%Y-%m-%d') Date,
-                      COUNT(DISTINCT o.id) OrderCount,
-                      COALESCE(SUM(o.total_amount),0) DealAmount
-               FROM d
-               LEFT JOIN trade_order o ON DATE(o.completed_at)=d.dt AND {RealOrderWhere}
-               GROUP BY d.dt ORDER BY d.dt",
-            new { d = days });
-        return rows.Select(r => new Dtos.TrendPointDto(r.Date, r.OrderCount, r.DealAmount)).ToList();
+        return await CachedAsync($"dash:trend:{days}", async () =>
+        {
+            // 生成日期序列左连接成交数据, 补齐无成交的日期
+            var rows = await conn.QueryAsync<(string Date, long OrderCount, decimal DealAmount)>(
+                $@"WITH RECURSIVE d AS (
+                       SELECT CURDATE() - INTERVAL @d-1 DAY AS dt
+                       UNION ALL SELECT dt + INTERVAL 1 DAY FROM d WHERE dt < CURDATE()
+                   )
+                   SELECT DATE_FORMAT(d.dt,'%Y-%m-%d') Date,
+                          COUNT(DISTINCT o.id) OrderCount,
+                          COALESCE(SUM(o.total_amount),0) DealAmount
+                   FROM d
+                   LEFT JOIN trade_order o ON DATE(o.completed_at)=d.dt AND {RealOrderWhere}
+                   GROUP BY d.dt ORDER BY d.dt",
+                new { d = days });
+            return rows.Select(r => new Dtos.TrendPointDto(r.Date, r.OrderCount, r.DealAmount)).ToList();
+        });
     }
 
     /// <summary>品类分布 (供应/需求数量 + 真实成交额)。</summary>
@@ -85,19 +108,22 @@ public class DashboardService
     {
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
-        var rows = await conn.QueryAsync<(long CategoryId, string CategoryName, long SupplyCount, long DemandCount, decimal DealAmount)>(
-            @"SELECT c.id CategoryId, c.name CategoryName,
-                     (SELECT COUNT(*) FROM product_supply s WHERE s.category_id=c.id AND s.status='ACTIVE') SupplyCount,
-                     (SELECT COUNT(*) FROM purchase_demand d WHERE d.category_id=c.id AND d.status='ACTIVE') DemandCount,
-                     COALESCE((
-                        SELECT SUM(i.amount) FROM trade_order_item i
-                        JOIN product_supply ps ON ps.id=i.supply_id
-                        JOIN trade_order o ON o.id=i.order_id
-                        WHERE ps.category_id=c.id AND " + RealOrderWhere + @"), 0) DealAmount
-              FROM product_category c
-              WHERE c.is_enabled=1 AND c.parent_id IS NOT NULL
-              ORDER BY SupplyCount DESC, c.sort_order");
-        return rows.Select(r => new Dtos.CategoryStatDto(r.CategoryName, r.SupplyCount, r.DemandCount, r.DealAmount)).ToList();
+        return await CachedAsync("dash:category", async () =>
+        {
+            var rows = await conn.QueryAsync<(long CategoryId, string CategoryName, long SupplyCount, long DemandCount, decimal DealAmount)>(
+                @"SELECT c.id CategoryId, c.name CategoryName,
+                         (SELECT COUNT(*) FROM product_supply s WHERE s.category_id=c.id AND s.status='ACTIVE') SupplyCount,
+                         (SELECT COUNT(*) FROM purchase_demand d WHERE d.category_id=c.id AND d.status='ACTIVE') DemandCount,
+                         COALESCE((
+                            SELECT SUM(i.amount) FROM trade_order_item i
+                            JOIN product_supply ps ON ps.id=i.supply_id
+                            JOIN trade_order o ON o.id=i.order_id
+                            WHERE ps.category_id=c.id AND " + RealOrderWhere + @"), 0) DealAmount
+                  FROM product_category c
+                  WHERE c.is_enabled=1 AND c.parent_id IS NOT NULL
+                  ORDER BY SupplyCount DESC, c.sort_order");
+            return rows.Select(r => new Dtos.CategoryStatDto(r.CategoryName, r.SupplyCount, r.DemandCount, r.DealAmount)).ToList();
+        });
     }
 
     /// <summary>地区分布 (息县下辖乡镇: 供需数量 + 真实成交额)。</summary>
@@ -105,19 +131,22 @@ public class DashboardService
     {
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
-        var rows = await conn.QueryAsync<(long TownId, string TownName, long SupplyCount, long DemandCount, decimal DealAmount)>(
-            @"SELECT r.id TownId, r.region_name TownName,
-                     (SELECT COUNT(*) FROM product_supply s WHERE s.town_id=r.id AND s.status='ACTIVE') SupplyCount,
-                     (SELECT COUNT(*) FROM purchase_demand d WHERE d.town_id=r.id AND d.status='ACTIVE') DemandCount,
-                     COALESCE((
-                        SELECT SUM(o.total_amount) FROM trade_order o
-                        JOIN trade_quote q ON q.id=o.quote_id
-                        JOIN product_supply ps ON ps.id=q.supply_id
-                        WHERE ps.town_id=r.id AND " + RealOrderWhere + @"), 0) DealAmount
-              FROM sys_region r
-              WHERE r.region_level=4 AND r.parent_id=3 AND r.is_enabled=1
-              ORDER BY r.sort_order");
-        return rows.Select(r => new Dtos.RegionStatDto(r.TownId, r.TownName, r.SupplyCount, r.DemandCount, r.DealAmount)).ToList();
+        return await CachedAsync("dash:region", async () =>
+        {
+            var rows = await conn.QueryAsync<(long TownId, string TownName, long SupplyCount, long DemandCount, decimal DealAmount)>(
+                @"SELECT r.id TownId, r.region_name TownName,
+                         (SELECT COUNT(*) FROM product_supply s WHERE s.town_id=r.id AND s.status='ACTIVE') SupplyCount,
+                         (SELECT COUNT(*) FROM purchase_demand d WHERE d.town_id=r.id AND d.status='ACTIVE') DemandCount,
+                         COALESCE((
+                            SELECT SUM(o.total_amount) FROM trade_order o
+                            JOIN trade_quote q ON q.id=o.quote_id
+                            JOIN product_supply ps ON ps.id=q.supply_id
+                            WHERE ps.town_id=r.id AND " + RealOrderWhere + @"), 0) DealAmount
+                  FROM sys_region r
+                  WHERE r.region_level=4 AND r.parent_id=3 AND r.is_enabled=1
+                  ORDER BY r.sort_order");
+            return rows.Select(r => new Dtos.RegionStatDto(r.TownId, r.TownName, r.SupplyCount, r.DemandCount, r.DealAmount)).ToList();
+        });
     }
 
     /// <summary>用户结构 (按角色计数)。</summary>
@@ -125,9 +154,12 @@ public class DashboardService
     {
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
-        var rows = await conn.QueryAsync<(string Role, long Count)>(
-            "SELECT role Role, COUNT(*) Count FROM sys_user GROUP BY role ORDER BY Count DESC");
-        return rows.Select(r => new Dtos.RoleStatDto(r.Role, r.Count)).ToList();
+        return await CachedAsync("dash:users", async () =>
+        {
+            var rows = await conn.QueryAsync<(string Role, long Count)>(
+                "SELECT role Role, COUNT(*) Count FROM sys_user GROUP BY role ORDER BY Count DESC");
+            return rows.Select(r => new Dtos.RoleStatDto(r.Role, r.Count)).ToList();
+        });
     }
 
     /// <summary>消息活跃 (最近 N 天消息量与会话数)。</summary>
@@ -136,18 +168,21 @@ public class DashboardService
         var days = range switch { "7d" => 7, "90d" => 90, _ => 30 };
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
-        var rows = await conn.QueryAsync<(string Date, long MessageCount, long ConversationCount)>(
-            @"WITH RECURSIVE d AS (
-                   SELECT CURDATE() - INTERVAL @d-1 DAY AS dt
-                   UNION ALL SELECT dt + INTERVAL 1 DAY FROM d WHERE dt < CURDATE()
-               )
-               SELECT DATE_FORMAT(d.dt,'%Y-%m-%d') Date,
-                      COUNT(m.id) MessageCount,
-                      COUNT(DISTINCT m.conversation_id) ConversationCount
-               FROM d
-               LEFT JOIN chat_message m ON DATE(m.created_at)=d.dt
-               GROUP BY d.dt ORDER BY d.dt",
-            new { d = days });
-        return rows.Select(r => new Dtos.ChatActivityDto(r.Date, r.MessageCount, r.ConversationCount)).ToList();
+        return await CachedAsync($"dash:chat:{days}", async () =>
+        {
+            var rows = await conn.QueryAsync<(string Date, long MessageCount, long ConversationCount)>(
+                @"WITH RECURSIVE d AS (
+                       SELECT CURDATE() - INTERVAL @d-1 DAY AS dt
+                       UNION ALL SELECT dt + INTERVAL 1 DAY FROM d WHERE dt < CURDATE()
+                   )
+                   SELECT DATE_FORMAT(d.dt,'%Y-%m-%d') Date,
+                          COUNT(m.id) MessageCount,
+                          COUNT(DISTINCT m.conversation_id) ConversationCount
+                   FROM d
+                   LEFT JOIN chat_message m ON DATE(m.created_at)=d.dt
+                   GROUP BY d.dt ORDER BY d.dt",
+                new { d = days });
+            return rows.Select(r => new Dtos.ChatActivityDto(r.Date, r.MessageCount, r.ConversationCount)).ToList();
+        });
     }
 }

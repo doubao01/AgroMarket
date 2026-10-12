@@ -3,7 +3,6 @@ using AgroMarket.Api.Ai.Dtos;
 using AgroMarket.Api.Ai.Infrastructure;
 using AgroMarket.Api.Ai.Tools;
 using AgroMarket.Api.Common;
-using Microsoft.Extensions.Caching.Memory;
 
 namespace AgroMarket.Api.Ai.Application;
 
@@ -18,14 +17,14 @@ public class AiChatService
 
     private readonly ILlmClient _llm;
     private readonly AiToolRegistry _tools;
-    private readonly IMemoryCache _cache;
+    private readonly AiRateLimiter _limiter;
     private readonly AiChatRepository _repo;
 
-    public AiChatService(ILlmClient llm, AiToolRegistry tools, IMemoryCache cache, AiChatRepository repo)
+    public AiChatService(ILlmClient llm, AiToolRegistry tools, AiRateLimiter limiter, AiChatRepository repo)
     {
         _llm = llm;
         _tools = tools;
-        _cache = cache;
+        _limiter = limiter;
         _repo = repo;
     }
 
@@ -42,10 +41,9 @@ public class AiChatService
     {
         if (string.IsNullOrWhiteSpace(req.Message))
             throw new BizException("消息内容不能为空");
-        if (req.Message.Length > MaxInputLength)
-            throw new BizException($"消息过长 (最多 {MaxInputLength} 字)");
+        AiRateLimiter.EnsureLength(req.Message, MaxInputLength, "消息");
 
-        EnforceRateLimit(userId);
+        _limiter.Check(userId, RateLimitPerMinute);
 
         // 延迟建库: 先复用已有会话(校验归属), 新建会话待首轮成功后再落库, 避免 LLM 失败产生空会话。
         AiConversationRow? conv = null;
@@ -81,7 +79,8 @@ public class AiChatService
                 break;
             }
 
-            messages.Add(ChatMessage.Assistant(resp.Content));
+            // 原样回传带 tool_calls 的助手消息, 再逐条以 tool_call_id 关联工具结果 (OpenAI 协议要求)
+            messages.Add(ChatMessage.Assistant(resp.Content, resp.ToolCalls));
             foreach (var call in resp.ToolCalls)
             {
                 string result;
@@ -101,7 +100,7 @@ public class AiChatService
                 {
                     result = "{\"error\":\"未知工具\"}";
                 }
-                messages.Add(ChatMessage.Tool(result));
+                messages.Add(ChatMessage.Tool(call.Id, call.Name, result));
             }
         }
 
@@ -187,18 +186,5 @@ public class AiChatService
         var t = (message ?? "").Trim().Replace('\n', ' ');
         if (t.Length > MaxTitleLength) t = t[..MaxTitleLength];
         return string.IsNullOrWhiteSpace(t) ? "新对话" : t;
-    }
-
-    private void EnforceRateLimit(long userId)
-    {
-        var key = $"ai_rl_{userId}";
-        var count = _cache.GetOrCreate(key, e =>
-        {
-            e.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(1);
-            return 0;
-        });
-        if (count >= RateLimitPerMinute)
-            throw new BizException("操作过于频繁, 请稍后再试", ErrorCodes.Conflict);
-        _cache.Set(key, count + 1, TimeSpan.FromMinutes(1));
     }
 }

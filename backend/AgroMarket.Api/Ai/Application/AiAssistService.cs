@@ -9,14 +9,26 @@ namespace AgroMarket.Api.Ai.Application;
 /// <summary>内容发布辅助: 生成描述/分类建议/价格区间。结果仅供表单预填, 不自动提交。</summary>
 public class AiAssistService
 {
-    private readonly ILlmClient _llm;
+    private const int MaxInputLength = 2000;
+    private const int RateLimitPerMinute = 15;
 
-    public AiAssistService(ILlmClient llm) => _llm = llm;
+    private readonly ILlmClient _llm;
+    private readonly AiRateLimiter _limiter;
+
+    public AiAssistService(ILlmClient llm, AiRateLimiter limiter)
+    {
+        _llm = llm;
+        _limiter = limiter;
+    }
 
     public async Task<AiAssistResponse> AssistPublishAsync(long userId, AiAssistRequest req, CancellationToken ct = default)
     {
         if (req.Type != "SUPPLY" && req.Type != "DEMAND")
             throw new BizException("类型必须为 SUPPLY 或 DEMAND");
+
+        var combined = $"{(req.Title ?? "")}{(req.Category ?? "")}{(req.Keywords ?? "")}";
+        AiRateLimiter.EnsureLength(combined, MaxInputLength, "输入内容");
+        _limiter.Check(userId, RateLimitPerMinute);
 
         var kind = req.Type == "SUPPLY" ? "供应(出售)" : "需求(采购)";
         var prompt =

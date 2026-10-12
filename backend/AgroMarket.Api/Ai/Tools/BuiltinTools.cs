@@ -69,6 +69,38 @@ public class TradeTrendTool : IAiTool
     }
 }
 
+/// <summary>乡镇地区分布工具 (息县下辖乡镇的供需数量与真实成交额, 聚合只读)。</summary>
+public class RegionDistributionTool : IAiTool
+{
+    private readonly IDbConnectionFactory _db;
+    public RegionDistributionTool(IDbConnectionFactory db) => _db = db;
+
+    public ToolDefinition Definition => new(
+        "get_region_distribution",
+        "获取息县各乡镇的农产品供需分布(每个乡镇的在售供应数、在售需求数、真实成交额)。用户询问'哪个乡镇供应/需求最多'或地区分布时使用。",
+        """{"type":"object","properties":{},"additionalProperties":false}""");
+
+    public async Task<string> InvokeAsync(long userId, string argumentsJson, CancellationToken ct)
+    {
+        using var conn = _db.Create();
+        var rows = await conn.QueryAsync(
+            @"SELECT r.region_name TownName,
+                     (SELECT COUNT(*) FROM product_supply s WHERE s.town_id=r.id AND s.status='ACTIVE') SupplyCount,
+                     (SELECT COUNT(*) FROM purchase_demand d WHERE d.town_id=r.id AND d.status='ACTIVE') DemandCount,
+                     COALESCE((
+                        SELECT SUM(o.total_amount) FROM trade_order o
+                        JOIN trade_quote q ON q.id=o.quote_id
+                        JOIN product_supply ps ON ps.id=q.supply_id
+                        WHERE ps.town_id=r.id AND o.status='COMPLETED' AND o.is_demo=0 AND EXISTS (
+                            SELECT 1 FROM payment_record p
+                            WHERE p.order_id=o.id AND p.status='SUCCESS' AND p.channel NOT IN ('MOCK','OFFLINE','DEMO'))), 0) DealAmount
+              FROM sys_region r
+              WHERE r.region_level=4 AND r.parent_id=3 AND r.is_enabled=1
+              ORDER BY (SupplyCount + DemandCount) DESC, r.sort_order");
+        return JsonSerializer.Serialize(new { towns = rows });
+    }
+}
+
 /// <summary>采购需求搜索工具。</summary>
 public class SearchDemandsTool : IAiTool
 {
