@@ -89,3 +89,11 @@ This file records user instructions, preferences, and teachings for reference in
   - 数据库使用 MySQL `WITH RECURSIVE` 生成日期序列并 LEFT JOIN 业务表来补齐无数据的日期（趋势接口），MariaDB 10.11 兼容。
   - 前端图表采用纯 CSS（view + 百分比高度/宽度）实现，未引入 uCharts/ECharts，H5 与 mp-weixin 行为一致，避免 canvas 适配问题。
   - 大屏真实成交口径与 `AdminService.GetStatsAsync` 一致：`trade_order.status='COMPLETED' AND is_demo=0` 且存在 `payment_record.status='SUCCESS' AND channel NOT IN ('MOCK','OFFLINE','DEMO')`。
+
+[User Instruction Entry]
+[工作节奏偏好：批量验证，而非逐个改动验证]
+- Date: 2026-10-12
+- Context: 用户在大屏投屏主题改动后，对"改一处即构建/验证一处"的方式提出纠正
+- Instructions:
+  - 不要每完成一个小改动就立刻构建/测试；把同一版本内的改动累积完，最后统一做一次大版本构建验证与测试。
+  - 验证/测试放在（该版本）所有改动做完之后进行，过程中不必逐个自测、也不必逐步向用户汇报"已验证"。
