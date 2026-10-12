@@ -48,6 +48,8 @@
         </view>
         <view v-else class="muted">登录后可查看联系方式</view>
       </view>
+
+      <view v-if="!isOwner" class="report-link" @tap="report">举报该信息</view>
     </view>
 
     <view class="empty" v-else>{{ loading ? '加载中...' : '信息不存在或已下架' }}</view>
@@ -86,6 +88,7 @@
 <script>
 import { supplyApi, favoriteApi, quoteApi, chatApi } from '../../api/index'
 import { requireLogin, getUser } from '../../utils/request'
+import { reportTarget } from '../../utils/report'
 
 export default {
   data() {
@@ -176,6 +179,7 @@ export default {
       } catch (e) {}
     },
     goEdit() { uni.showToast({ title: '请在“我的发布”中编辑', icon: 'none' }) },
+    report() { reportTarget('SUPPLY', this.item.id, '举报该供应信息') },
     previewImg(i) {
       uni.previewImage({ urls: this.item.images.map(x => x.url), current: i })
     },
@@ -234,4 +238,5 @@ export default {
   padding-bottom: calc(32rpx + env(safe-area-inset-bottom));
 }
 .page { padding-bottom: 140rpx; }
+.report-link { text-align: center; font-size: 24rpx; color: #9aa8a0; padding: 24rpx 0; }
 </style>
