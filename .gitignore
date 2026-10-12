@@ -108,8 +108,14 @@
 **/.env
 **/.env.local
 **/.env.*.local
+!**/.env.example
 *.pem
 *.key
+
+# AgroMarket uploads
+**/uploads/
+**/bin/
+**/obj/
 
 # Temporary files
 *.tmp
