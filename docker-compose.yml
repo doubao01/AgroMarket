@@ -1,0 +1,59 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: agromarket-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_change_me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-agro_market}
+      MYSQL_USER: ${MYSQL_USER:-agromarket}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change_me_db_password}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--default-authentication-plugin=mysql_native_password"]
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./database/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./database/02_seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root_change_me}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: agromarket-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Default: "Server=db;Port=3306;Database=${MYSQL_DATABASE:-agro_market};User=${MYSQL_USER:-agromarket};Password=${MYSQL_PASSWORD:-change_me_db_password};DefaultCommandTimeout=30;"
+      Jwt__SecretKey: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is required (>=32 bytes)}
+      Jwt__ExpireHours: "168"
+      Sms__DevMode: "false"
+      Payment__MockEnabled: "${PAYMENT_MOCK_ENABLED:-false}"
+      Payment__Wechat__AppId: ${WECHAT_APP_ID:-}
+      Payment__Wechat__MchId: ${WECHAT_MCH_ID:-}
+      Payment__Wechat__ApiV3Key: ${WECHAT_APIV3_KEY:-}
+      Payment__Wechat__CertSerialNo: ${WECHAT_CERT_SERIAL_NO:-}
+      Payment__Wechat__PrivateKey: ${WECHAT_PRIVATE_KEY:-}
+      Payment__Wechat__NotifyUrl: ${WECHAT_NOTIFY_URL:-}
+      Payment__Alipay__AppId: ${ALIPAY_APP_ID:-}
+      Payment__Alipay__PrivateKey: ${ALIPAY_PRIVATE_KEY:-}
+      Payment__Alipay__AlipayPublicKey: ${ALIPAY_PUBLIC_KEY:-}
+      Payment__Alipay__Gateway: ${ALIPAY_GATEWAY:-https://openapi.alipay.com/gateway.do}
+      Payment__Alipay__NotifyUrl: ${ALIPAY_NOTIFY_URL:-}
+      Payment__Alipay__ReturnUrl: ${ALIPAY_RETURN_URL:-}
+      CorsOrigins__0: ${CORS_ORIGIN:-http://localhost:5173}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - api_uploads:/app/uploads
+
+volumes:
+  db_data:
+  api_uploads:

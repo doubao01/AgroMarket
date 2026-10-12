@@ -1,0 +1,46 @@
+{
+  "pages": [
+    { "path": "pages/index/index", "style": { "navigationBarTitleText": "息县农贸通" } },
+    { "path": "pages/market/index", "style": { "navigationBarTitleText": "供需市场", "enablePullDownRefresh": true } },
+    { "path": "pages/supply/detail", "style": { "navigationBarTitleText": "供应详情" } },
+    { "path": "pages/supply/publish", "style": { "navigationBarTitleText": "发布供应" } },
+    { "path": "pages/demand/detail", "style": { "navigationBarTitleText": "采购详情" } },
+    { "path": "pages/demand/publish", "style": { "navigationBarTitleText": "发布采购" } },
+    { "path": "pages/quote/list", "style": { "navigationBarTitleText": "我的报价", "enablePullDownRefresh": true } },
+    { "path": "pages/quote/detail", "style": { "navigationBarTitleText": "报价协商" } },
+    { "path": "pages/order/list", "style": { "navigationBarTitleText": "我的订单", "enablePullDownRefresh": true } },
+    { "path": "pages/order/detail", "style": { "navigationBarTitleText": "订单详情" } },
+    { "path": "pages/message/index", "style": { "navigationBarTitleText": "消息", "enablePullDownRefresh": true } },
+    { "path": "pages/chat/list", "style": { "navigationBarTitleText": "消息", "enablePullDownRefresh": true } },
+    { "path": "pages/chat/chat", "style": { "navigationBarTitleText": "聊天" } },
+    { "path": "pages/user/index", "style": { "navigationBarTitleText": "我的" } },
+    { "path": "pages/user/login", "style": { "navigationBarTitleText": "登录 / 注册" } },
+    { "path": "pages/user/profile", "style": { "navigationBarTitleText": "个人资料" } },
+    { "path": "pages/user/auth", "style": { "navigationBarTitleText": "主体认证" } },
+    { "path": "pages/user/listings", "style": { "navigationBarTitleText": "我的发布", "enablePullDownRefresh": true } },
+    { "path": "pages/user/favorites", "style": { "navigationBarTitleText": "我的收藏", "enablePullDownRefresh": true } },
+    { "path": "pages/address/list", "style": { "navigationBarTitleText": "收货地址" } },
+    { "path": "pages/notice/index", "style": { "navigationBarTitleText": "平台公告" } },
+    { "path": "pages/admin/index", "style": { "navigationBarTitleText": "管理后台" } },
+    { "path": "pages/dashboard/index", "style": { "navigationBarTitleText": "数据大屏", "enablePullDownRefresh": true } },
+    { "path": "pages/ai/assistant", "style": { "navigationBarTitleText": "AI 助手" } }
+  ],
+  "tabBar": {
+    "color": "#7a8a80",
+    "selectedColor": "#2e8b57",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "black",
+    "list": [
+      { "pagePath": "pages/index/index", "text": "首页" },
+      { "pagePath": "pages/market/index", "text": "市场" },
+      { "pagePath": "pages/chat/list", "text": "消息" },
+      { "pagePath": "pages/user/index", "text": "我的" }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "息县农贸通",
+    "navigationBarBackgroundColor": "#2e8b57",
+    "backgroundColor": "#f4f6f4"
+  }
+}
