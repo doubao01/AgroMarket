@@ -89,11 +89,35 @@ public class OpenAiCompatClient : ILlmClient
             parsed.Usage?.CompletionTokens ?? 0);
     }
 
-    private static object ToRequestMessage(ChatMessage m) => new
+    private static object ToRequestMessage(ChatMessage m)
     {
-        role = m.Role.ToString().ToLowerInvariant(),
-        content = m.Content,
-    };
+        var role = m.Role.ToString().ToLowerInvariant();
+        if (m.Role == ChatRole.Assistant && m.ToolCalls is { Count: > 0 })
+        {
+            return new Dictionary<string, object?>
+            {
+                ["role"] = role,
+                ["content"] = string.IsNullOrEmpty(m.Content) ? null : m.Content,
+                ["tool_calls"] = m.ToolCalls.Select(tc => new
+                {
+                    id = tc.Id,
+                    type = "function",
+                    function = new { name = tc.Name, arguments = tc.ArgumentsJson },
+                }).ToArray(),
+            };
+        }
+        if (m.Role == ChatRole.Tool)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["role"] = role,
+                ["content"] = m.Content,
+                ["tool_call_id"] = m.ToolCallId,
+                ["name"] = m.Name,
+            };
+        }
+        return new Dictionary<string, object?> { ["role"] = role, ["content"] = m.Content };
+    }
 
     private static JsonElement ParseSchema(string json)
     {

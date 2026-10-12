@@ -9,13 +9,25 @@ public enum ChatRole
     Tool,
 }
 
-/// <summary>一条对话消息 (OpenAI 兼容协议的最小映射)。</summary>
-public record ChatMessage(ChatRole Role, string Content)
+/// <summary>一条对话消息 (OpenAI 兼容协议的映射)。助手消息可携带 tool_calls; 工具消息必须携带 tool_call_id。</summary>
+public record ChatMessage(
+    ChatRole Role,
+    string Content,
+    IReadOnlyList<ToolCall>? ToolCalls = null,
+    string? ToolCallId = null,
+    string? Name = null)
 {
     public static ChatMessage System(string content) => new(ChatRole.System, content);
     public static ChatMessage User(string content) => new(ChatRole.User, content);
     public static ChatMessage Assistant(string content) => new(ChatRole.Assistant, content);
-    public static ChatMessage Tool(string content) => new(ChatRole.Tool, content);
+
+    /// <summary>携带工具调用请求的助手消息, 下一轮须原样回传以符合 OpenAI 协议。</summary>
+    public static ChatMessage Assistant(string content, IReadOnlyList<ToolCall> toolCalls)
+        => new(ChatRole.Assistant, content, toolCalls);
+
+    /// <summary>工具执行结果消息, 必须回传对应 tool_call_id。</summary>
+    public static ChatMessage Tool(string toolCallId, string name, string content)
+        => new(ChatRole.Tool, content, ToolCallId: toolCallId, Name: name);
 }
 
 /// <summary>LLM 可调用的工具定义 (JSON Schema 参数)。</summary>
