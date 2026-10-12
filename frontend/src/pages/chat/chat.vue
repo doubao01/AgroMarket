@@ -1,6 +1,35 @@
 <template>
   <view class="page chat-page">
+    <view class="chat-search">
+      <input
+        v-model="searchKeyword"
+        class="chat-search-input"
+        type="text"
+        placeholder="搜索本会话聊天记录"
+        confirm-type="search"
+        @confirm="doSearch"
+      />
+      <text v-if="searchKeyword" class="chat-search-clear" @tap="clearSearch">×</text>
+    </view>
+
+    <view v-if="searchMode" class="search-results">
+      <view v-if="!searchLoading && !searchResults.length" class="search-empty">未找到相关聊天记录</view>
+      <view
+        v-for="r in searchResults"
+        :key="r.message.id"
+        class="search-item"
+        @tap="jumpToResult(r)"
+      >
+        <view class="between">
+          <text class="search-item-sender">{{ mine(r.message) ? '我' : (peer.nickname || '对方') }}</text>
+          <text class="muted">{{ fmtTime(r.message.createdAt) }}</text>
+        </view>
+        <text class="search-item-content">{{ r.message.content || '[消息]' }}</text>
+      </view>
+    </view>
+
     <scroll-view
+      v-else
       class="msg-scroll"
       scroll-y
       :scroll-into-view="scrollInto"
@@ -17,7 +46,7 @@
           <text class="recall-text">{{ recallText(m) }}</text>
         </view>
 
-        <view v-else class="msg-row" :class="{ mine: mine(m) }" :id="'msg-' + m.id">
+        <view v-else class="msg-row" :class="{ mine: mine(m), highlight: Number(m.id) === highlightId }" :id="'msg-' + m.id">
           <view class="bubble" :class="{ 'bubble-mine': mine(m), 'bubble-card': isCard(m) }" @longpress="openMenu(m)">
             <view v-if="quoted(m)" class="quote">
               <text class="quote-text">{{ snippet(quoted(m)) }}</text>
@@ -122,15 +151,27 @@ export default {
       convSourceType: '',
       convSourceId: 0,
       convSource: null,
+      searchKeyword: '',
+      searchMode: false,
+      searchLoading: false,
+      searchResults: [],
+      highlightId: 0,
+      jumpToMessageId: 0,
     }
   },
   onLoad(options) {
     if (!requireLogin()) return
     this.convId = Number(options.id || 0)
+    const jumpId = Number(options.messageId || 0)
     const me = getUser()
     this.myId = me && me.id ? Number(me.id) : 0
     this.loadConv()
-    this.loadLatest()
+    if (jumpId > 0) {
+      this.jumpToMessageId = jumpId
+      this.jumpToMessageId_(jumpId)
+    } else {
+      this.loadLatest()
+    }
     this.startPoll()
     this.connectWs()
   },
@@ -234,6 +275,45 @@ export default {
       const map = {}
       this.messages.concat(list).forEach((m) => { if (m && m.id != null) map[m.id] = m })
       this.messages = Object.keys(map).map((k) => map[k]).sort((a, b) => a.id - b.id)
+    },
+    async doSearch() {
+      const kw = (this.searchKeyword || '').trim()
+      if (!kw) { this.clearSearch(); return }
+      this.searchMode = true
+      this.searchLoading = true
+      try {
+        this.searchResults = (await chatApi.search(kw, this.convId)) || []
+      } catch (e) { this.searchResults = [] } finally { this.searchLoading = false }
+    },
+    clearSearch() {
+      this.searchKeyword = ''
+      this.searchMode = false
+      this.searchResults = []
+    },
+    async jumpToResult(r) {
+      const targetId = Number(r.message.id)
+      this.clearSearch()
+      await this.jumpToMessageId_(targetId)
+    },
+    async jumpToMessageId_(targetId) {
+      if (!targetId) return
+      const exists = this.messages.some((m) => Number(m.id) === targetId)
+      if (!exists) {
+        try {
+          const res = await chatApi.messages(this.convId, { beforeId: targetId + 1, limit: 20 })
+          const items = res.items || []
+          this.merge(items)
+          if (items.length) {
+            this.hasMore = res.hasMore
+            this.nextCursor = res.nextCursor
+          }
+        } catch (e) {}
+      }
+      this.highlightId = targetId
+      this.$nextTick(() => {
+        this.scrollInto = 'msg-' + targetId
+        setTimeout(() => { this.highlightId = 0 }, 2000)
+      })
     },
     async send() {
       const text = (this.input || '').trim()
@@ -757,4 +837,27 @@ export default {
 .card-sub { font-size: 23rpx; color: #7a8a80; margin-top: 8rpx; display: block; }
 .card-price { font-size: 30rpx; color: #f2952b; font-weight: 600; margin-top: 8rpx; display: block; }
 .card-hint { font-size: 21rpx; color: #a7b3ac; margin-top: 10rpx; display: block; }
+.chat-search {
+  display: flex; align-items: center; padding: 12rpx 24rpx;
+  background: #fff; border-bottom: 1rpx solid #e3e9e4;
+}
+.chat-search-input {
+  flex: 1; height: 64rpx; padding: 0 24rpx; font-size: 27rpx;
+  background: #f2f5f3; border-radius: 32rpx;
+}
+.chat-search-clear {
+  margin-left: 14rpx; width: 40rpx; text-align: center;
+  color: #9aa8a0; font-size: 38rpx; line-height: 1;
+}
+.search-results { flex: 1; background: #f4f6f4; overflow-y: auto; }
+.search-empty { padding: 80rpx 0; text-align: center; color: #9aa8a0; font-size: 28rpx; }
+.search-item {
+  padding: 22rpx 28rpx; background: #fff; border-bottom: 1rpx solid #eef2ef;
+}
+.search-item-sender { font-size: 26rpx; color: #2e8b57; font-weight: 600; }
+.search-item-content {
+  display: block; margin-top: 8rpx; font-size: 27rpx; color: #44554c;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.msg-row.highlight .bubble { box-shadow: 0 0 0 4rpx #f2952b; }
 </style>

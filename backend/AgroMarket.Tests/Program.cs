@@ -307,6 +307,30 @@ if (sellerToken.Length > 0 && buyerToken.Length > 0 && adminToken.Length > 0)
             && carr[0].GetProperty("lastContent").GetString() == "有货";
         Check("会话列表含最后一条消息摘要", listOk);
 
+        // 消息搜索: 会话内 + 全局
+        var (sIn, inb) = await Call(HttpMethod.Get,
+            $"/api/chat/search?keyword=有货&conversationId={convId}", null, sellerToken);
+        var inItems = Data(inb);
+        var inOk = Code(inb) == 0 && inItems.ValueKind == JsonValueKind.Array && inItems.GetArrayLength() >= 2
+            && inItems[0].GetProperty("message").GetProperty("content").GetString()!.Contains("有货");
+        Check("会话内搜索命中消息", inOk, $"count={(inItems.ValueKind == JsonValueKind.Array ? inItems.GetArrayLength() : -1)}");
+
+        var (sGlob, gb) = await Call(HttpMethod.Get, "/api/chat/search?keyword=有货", null, sellerToken);
+        var gItems = Data(gb);
+        var gOk = Code(gb) == 0 && gItems.ValueKind == JsonValueKind.Array && gItems.GetArrayLength() >= 1
+            && gItems[0].GetProperty("conversation").TryGetProperty("id", out _)
+            && gItems[0].GetProperty("message").GetProperty("content").GetString()!.Contains("有货");
+        Check("全局搜索返回命中会话+消息", gOk, $"count={(gItems.ValueKind == JsonValueKind.Array ? gItems.GetArrayLength() : -1)}");
+
+        var (sNo, nb) = await Call(HttpMethod.Get, "/api/chat/search?keyword=%E4%B8%8D%E5%AD%98%E5%9C%A8%E7%9A%84%E8%AF%8Dxxx", null, sellerToken);
+        Check("搜索无结果返回空数组", Code(nb) == 0 && Data(nb).ValueKind == JsonValueKind.Array && Data(nb).GetArrayLength() == 0);
+
+        var (sEmptyKw, ekb) = await Call(HttpMethod.Get, "/api/chat/search?keyword=", null, sellerToken);
+        Check("搜索空关键词返回 400", sEmptyKw == HttpStatusCode.BadRequest || Code(ekb) == 400);
+
+        var (sOutsider, ob) = await Call(HttpMethod.Get, $"/api/chat/search?keyword=有货&conversationId={convId}", null, adminToken);
+        Check("非成员会话内搜索返回 403", sOutsider == HttpStatusCode.Forbidden || Code(ob) == 403);
+
         var (_, hb) = await Call(HttpMethod.Delete, $"/api/chat/conversations/{convId}", null, buyerToken);
         var (_, clBuyer) = await Call(HttpMethod.Get, "/api/chat/conversations", null, buyerToken);
         var (_, clSeller) = await Call(HttpMethod.Get, "/api/chat/conversations", null, sellerToken);
