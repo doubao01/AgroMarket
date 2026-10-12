@@ -49,7 +49,7 @@ This file records user instructions, preferences, and teachings for reference in
 - Context: Discovered by Agent while adding the chat module migration
 - Category: Operations & Deployment
 - Instructions:
-  - 数据库脚本按序执行：`database/01_schema.sql`（结构）→ `02_seed.sql`（种子）→ `03_chat.sql`（聊天模块增量迁移，含 6 张 chat_* 表 + trade_quote 扩展列）→ `04_chat_wechat.sql`（微信式增强：chat_message 增 `reply_to_message_id`/`recalled_at`，chat_participant 增 `last_delivered_message_id`）→ `05_ai_chat.sql`（AI 对话持久化：`ai_conversation`/`ai_message`），`database/init-db.sh` 已串联五者且可重复执行。
+  - 数据库脚本按序执行：`database/01_schema.sql`（结构）→ `02_seed.sql`（种子）→ `03_chat.sql`（聊天模块增量迁移，含 chat_* 表 + trade_quote 扩展列）→ `04_chat_wechat.sql`（微信式增强：chat_message 增 `reply_to_message_id`/`recalled_at`，chat_participant 增 `last_delivered_message_id`）→ `05_ai_chat.sql`（AI 对话持久化：`ai_conversation`/`ai_message`）→ `06_chat_cleanup.sql`（会话备注名 `chat_participant.remark`；DROP 死表 `chat_message_receipt`/`chat_attachment`），`database/init-db.sh` 已串联六者且可重复执行。
   - 对已在运行的库应用新增迁移：用应用账号 `mysql -uagromarket -pagromarket_dev_2026 agro_market < database/0X_xxx.sql`（脚本用 `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS`，幂等）。若需要 DDL 权限，用本地 socket 的 root：`mysql -uroot < ...`（**不要带 `-h127.0.0.1`**，root 走 unix_socket 认证，带 `-h` 会 Access denied）。
   - 本机同时有 `mysql` 与 `mariadb` 两个客户端；本地应用账号 `agromarket` / `agromarket_dev_2026`，root 走本地 socket 免密。
   - 后端启动依赖开发配置：`ASPNETCORE_ENVIRONMENT=Development ASPNETCORE_URLS=http://127.0.0.1:8080 dotnet run --no-build`（连接串/JWT 在 appsettings.Development.json）。
@@ -97,3 +97,15 @@ This file records user instructions, preferences, and teachings for reference in
 - Instructions:
   - 不要每完成一个小改动就立刻构建/测试；把同一版本内的改动累积完，最后统一做一次大版本构建验证与测试。
   - 验证/测试放在（该版本）所有改动做完之后进行，过程中不必逐个自测、也不必逐步向用户汇报"已验证"。
+
+[Project Knowledge Summary]
+- Date: 2026-10-12
+- Context: Discovered by Agent while closing chat-module gaps (global socket / mute / remark / dead tables)
+- Category: Workflow & Collaboration / Environment Configuration
+- Instructions:
+  - 前端聊天连接已统一到 `frontend/src/utils/chat-store.js`：App 启动/登录后建立**单一常驻 WebSocket**，维护全局未读总数并同步底部"消息" tab 角标（`uni.setTabBarBadge`，索引 2），跨页弹提示；会话页 `chat.vue` 改为订阅该 store 事件 + `getSocket().send(...)`，不再自建连接。登录 `afterAuth` 需先 `teardownChat()` 再 `initChat()`（避免复用失效 token 的旧连接）；登出用 `teardownChat()`。
+  - 非 H5 平台 WebSocket 地址由 `utils/request.js` 导出的 `BASE_URL` 推导（`BASE_URL.replace(/^http/, 'ws')`），`BASE_URL` 是前后端地址的唯一出处；H5 仍走 `location.host` + vite `/ws` 代理。
+  - 会话备注名 `ConversationSettingsRequest.Remark`（空串清除，>64 字 400），存 `chat_participant.remark`（每成员独立、仅自己可见）；会话 DTO 增 `remark`，前端展示 `remark || peer.nickname`。
+  - 免打扰（`is_muted`）前端长按菜单可切换；`chat-store` 对免打扰会话不弹新消息提示（未读仍累计）。
+  - 死表 `chat_message_receipt`/`chat_attachment` 已全仓库确认无代码引用，从 `03_chat.sql` 移除并在 `06_chat_cleanup.sql` DROP。
+  - 前端无 Pinia/事件总线，全局状态用 Vue `reactive` 模块单例（`chat-store.js`）实现即可；H5 与 mp-weixin 构建产物已确认包含新逻辑（如 `replace(/^http/,"ws")`、`设置备注名`）。

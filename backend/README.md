@@ -88,6 +88,7 @@ cd backend && dotnet run --project AgroMarket.Api
 
 - 会话去重：`conv_key = min(uid):max(uid):sourceType:sourceId`，唯一约束 `uk_conv_key` 兜底并发创建（冲突后重查既有会话）。
 - 消息幂等：`chat_message(conversation_id, client_msg_id)` 唯一；重复 `clientMsgId` 返回既有消息，不重复计数未读。
+- 会话设置：`chat_participant` 每成员独立维护置顶（`is_pinned`）、免打扰（`is_muted`）与备注名（`remark`，仅自己可见，`NULLIF(TRIM(...),'')` 落库即留空清除，最长 64 字）。
 - 未读/已读：`chat_participant.unread_count` 按成员维护，`POST .../read` 由服务端校验成员后重算；删除会话仅 `is_hidden=1` 作用于当前用户，收到新消息自动恢复。
 - 权限：所有端点校验 `ChatParticipant` 成员身份，`userId` 一律取自 token，不信任客户端传参；`chat_block` 双向拦截。
 - 实时通道：`GET /ws/chat`（原生 WebSocket，ADR-1）。握手鉴权用 `?token=`（也兼容 `Authorization`/`X-Token` 头）；消息先落库再推送，协议上行 `ping/send/read/delivered/typing/recall`，下行 `connected/pong/message/read/delivered/typing/recall/ack/error`；连接注册表为单进程内存实现（`ChatConnectionManager`），推送通过 `IRealtimeNotifier` 抽象，多实例部署时替换为 Redis 广播即可。
@@ -101,7 +102,7 @@ cd backend && dotnet run --project AgroMarket.Api
 | POST | `/api/chat/conversations` | 发起/复用会话（`peerUserId`、`sourceType?`、`sourceId?`） |
 | GET | `/api/chat/conversations` | 会话列表（`filter=ALL\|UNREAD`、`keyword`、分页） |
 | GET | `/api/chat/conversations/{id}` | 会话详情 |
-| PUT | `/api/chat/conversations/{id}/settings` | 置顶/免打扰 |
+| PUT | `/api/chat/conversations/{id}/settings` | 置顶/免打扰/备注名（`isPinned`/`isMuted`/`remark`，均为可选，`remark` 空串清除） |
 | DELETE | `/api/chat/conversations/{id}` | 删除（隐藏）会话 |
 | GET | `/api/chat/conversations/{id}/messages` | 消息列表（游标 `beforeId`、`limit`） |
 | POST | `/api/chat/conversations/{id}/messages` | 发送消息（`clientMsgId` 幂等） |
@@ -209,7 +210,7 @@ dotnet build AgroMarket.Api/AgroMarket.Api.csproj
 dotnet run --project AgroMarket.Tests
 ```
 
-覆盖：健康检查、未登录 401、密码登录、管理员统计（区分演示成交额）、越权 403、公开列表、报价→接受→下单→确认→未支付禁止发货→渠道不可用 501→模拟支付→发货→收货完整状态机、采购需求报价转订单、站内聊天（会话去重、消息幂等、未读/已读、非成员 403、删除仅对己生效）、WebSocket 实时通道、微信式富消息（图片/引用/撤回/送达/输入状态/对端游标）、从聊天转订单（分享商品/会话内报价/直接下单/订单卡片推送）、拉黑管理，以及 AI E2E（内置 Mock LLM 强校验 tool_call_id，自动验证两轮工具调用、titleSuggestions、anomalies）。
+覆盖：健康检查、未登录 401、密码登录、管理员统计（区分演示成交额）、越权 403、公开列表、报价→接受→下单→确认→未支付禁止发货→渠道不可用 501→模拟支付→发货→收货完整状态机、采购需求报价转订单、站内聊天（会话去重、消息幂等、未读/已读、非成员 403、删除仅对己生效）、WebSocket 实时通道、微信式富消息（图片/引用/撤回/送达/输入状态/对端游标）、实时推送（`read`/`delivered`/`typing`/`recall` 推送至对端）、会话设置（置顶/免打扰/备注名回显、备注超长 400、空串清除、`filter=UNREAD` 命中与已读后移出）、从聊天转订单（分享商品/会话内报价/直接下单/订单卡片推送/会话内还价·接受·拒绝）、拉黑管理，以及 AI E2E（内置 Mock LLM 强校验 tool_call_id，自动验证两轮工具调用、titleSuggestions、anomalies）。
 
 ## 数据一致性约定
 

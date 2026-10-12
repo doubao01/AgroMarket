@@ -427,6 +427,107 @@ if (sellerToken.Length > 0 && buyerToken.Length > 0)
     }
 }
 
+// 10b. 实时通道: read/delivered/typing/recall 推送
+if (sellerToken.Length > 0 && buyerToken.Length > 0)
+{
+    Console.WriteLine("\n--- 10b. 实时推送 (已读/送达/输入/撤回) ---");
+    var wsBase2 = baseUrl.Replace("http://", "ws://").Replace("https://", "wss://");
+    using var ws2 = new ClientWebSocket();
+
+    async Task<JsonElement?> WsRecv2(int timeoutMs = 4000)
+    {
+        var buf = new byte[16 * 1024];
+        using var cts = new CancellationTokenSource(timeoutMs);
+        var ms = new MemoryStream();
+        try
+        {
+            while (true)
+            {
+                var r = await ws2.ReceiveAsync(buf, cts.Token);
+                if (r.MessageType == WebSocketMessageType.Close) return null;
+                ms.Write(buf, 0, r.Count);
+                if (r.EndOfMessage) break;
+            }
+        }
+        catch { return null; }
+        try { return JsonDocument.Parse(Encoding.UTF8.GetString(ms.ToArray())).RootElement.Clone(); }
+        catch { return null; }
+    }
+    string? TypeOf2(JsonElement? e) => e.HasValue && e.Value.TryGetProperty("type", out var t) ? t.GetString() : null;
+    async Task<JsonElement?> WsUntil(string type, int tries = 8)
+    {
+        for (var i = 0; i < tries; i++)
+        {
+            var e = await WsRecv2();
+            if (e is null) return null;
+            if (TypeOf2(e) == type) return e;
+        }
+        return null;
+    }
+
+    try
+    {
+        await ws2.ConnectAsync(new Uri($"{wsBase2}/ws/chat?token={Uri.EscapeDataString(sellerToken)}"), CancellationToken.None);
+        Check("实时推送通道连接成功", ws2.State == WebSocketState.Open);
+    }
+    catch (Exception ex) { Check("实时推送通道连接成功", false, ex.Message); }
+
+    if (ws2.State == WebSocketState.Open)
+    {
+        await WsRecv2(); // connected
+
+        long pcConv = 0;
+        var pcSrcId = (DateTime.Now.Ticks % 400_000) + 600_000;
+        var (_, pcCb) = await Call(HttpMethod.Post, "/api/chat/conversations",
+            new { peerUserId = 2, sourceType = "SUPPLY", sourceId = pcSrcId }, buyerToken);
+        if (Code(pcCb) == 0 && Data(pcCb).TryGetProperty("id", out var pcCe)) pcConv = pcCe.GetInt64();
+        Check("推送测试会话创建成功", pcConv > 0, $"code={Code(pcCb)}");
+
+        if (pcConv > 0)
+        {
+            var (_, pm) = await Call(HttpMethod.Post, $"/api/chat/conversations/{pcConv}/messages",
+                new { clientMsgId = Guid.NewGuid().ToString("N"), messageType = "TEXT", content = "推送测试消息" }, buyerToken);
+            long pcMid = Data(pm).TryGetProperty("id", out var pme) ? pme.GetInt64() : 0;
+
+            var msgPush = await WsUntil("message");
+            Check("买家发送后卖家收到 message 推送", TypeOf2(msgPush) == "message");
+
+            await Call(HttpMethod.Post, $"/api/chat/conversations/{pcConv}/typing", new { typing = true }, buyerToken);
+            var typingPush = await WsUntil("typing");
+            Check("买家输入中卖家收到 typing 推送",
+                TypeOf2(typingPush) == "typing" && typingPush!.Value.GetProperty("typing").GetBoolean());
+
+            if (pcMid > 0)
+            {
+                await Call(HttpMethod.Post, $"/api/chat/conversations/{pcConv}/delivered",
+                    new { lastDeliveredMessageId = pcMid }, buyerToken);
+                var devPush = await WsUntil("delivered");
+                Check("送达回执推送 delivered",
+                    TypeOf2(devPush) == "delivered" && devPush!.Value.GetProperty("lastDeliveredMessageId").GetInt64() == pcMid);
+
+                await Call(HttpMethod.Post, $"/api/chat/conversations/{pcConv}/read",
+                    new { lastReadMessageId = pcMid }, buyerToken);
+                var readPush = await WsUntil("read");
+                Check("已读回执推送 read",
+                    TypeOf2(readPush) == "read" && readPush!.Value.GetProperty("lastReadMessageId").GetInt64() == pcMid);
+
+                await Call(HttpMethod.Post, $"/api/chat/messages/{pcMid}/recall", null, buyerToken);
+                var recallPush = await WsUntil("recall");
+                Check("撤回推送 recall",
+                    TypeOf2(recallPush) == "recall" && recallPush!.Value.GetProperty("messageId").GetInt64() == pcMid);
+            }
+
+            foreach (var tk in new[] { buyerToken, sellerToken })
+            {
+                await Call(HttpMethod.Post, $"/api/chat/conversations/{pcConv}/read", new { lastReadMessageId = long.MaxValue }, tk);
+                await Call(HttpMethod.Delete, $"/api/chat/conversations/{pcConv}", null, tk);
+            }
+        }
+
+        try { await ws2.CloseAsync(WebSocketCloseStatus.NormalClosure, "done", CancellationToken.None); } catch { }
+    }
+}
+
 // 11. 微信式富消息 (图片 / 引用 / 撤回 / 送达 / 输入状态 / 对端游标)
 if (sellerToken.Length > 0 && buyerToken.Length > 0)
 {
@@ -500,6 +601,69 @@ if (sellerToken.Length > 0 && buyerToken.Length > 0)
         {
             await Call(HttpMethod.Post, $"/api/chat/conversations/{wxfConv}/read", new { lastReadMessageId = long.MaxValue }, tk);
             await Call(HttpMethod.Delete, $"/api/chat/conversations/{wxfConv}", null, tk);
+        }
+    }
+}
+
+// 11b. 会话设置 (置顶/免打扰/备注名) + 未读筛选
+if (sellerToken.Length > 0 && buyerToken.Length > 0)
+{
+    Console.WriteLine("\n--- 11b. 会话设置 + 未读筛选 ---");
+    long setConv = 0;
+    var setSrcId = (DateTime.Now.Ticks % 500_000) + 500_000;
+    var (_, setCb) = await Call(HttpMethod.Post, "/api/chat/conversations",
+        new { peerUserId = 2, sourceType = "SUPPLY", sourceId = setSrcId }, buyerToken);
+    if (Code(setCb) == 0 && Data(setCb).TryGetProperty("id", out var setCe)) setConv = setCe.GetInt64();
+    Check("设置测试会话创建成功", setConv > 0, $"code={Code(setCb)}");
+
+    if (setConv > 0)
+    {
+        var (sSet, _) = await Call(HttpMethod.Put, $"/api/chat/conversations/{setConv}/settings",
+            new { isPinned = true, isMuted = true, remark = "老张的店" }, buyerToken);
+        Check("更新会话设置(置顶/免打扰/备注名)成功", sSet == HttpStatusCode.OK, $"code={sSet}");
+
+        var (_, after) = await Call(HttpMethod.Get, "/api/chat/conversations?page=1&pageSize=100", null, buyerToken);
+        var setItem = Data(after).GetProperty("items").EnumerateArray()
+            .FirstOrDefault(x => x.GetProperty("id").GetInt64() == setConv);
+        var remarkOk = setItem.ValueKind != JsonValueKind.Undefined
+            && setItem.GetProperty("isPinned").GetBoolean()
+            && setItem.GetProperty("isMuted").GetBoolean()
+            && setItem.GetProperty("remark").GetString() == "老张的店";
+        Check("会话列表回显置顶/免打扰/备注名", remarkOk);
+
+        var (sLong, longB) = await Call(HttpMethod.Put, $"/api/chat/conversations/{setConv}/settings",
+            new { remark = new string('备', 65) }, buyerToken);
+        Check("备注名超长被拒绝(400)", sLong == HttpStatusCode.BadRequest || Code(longB) == 400);
+
+        // 未读筛选: 对方发消息 -> 命中 UNREAD, 已读后消失
+        await Call(HttpMethod.Post, $"/api/chat/conversations/{setConv}/messages",
+            new { clientMsgId = Guid.NewGuid().ToString("N"), messageType = "TEXT", content = "未读筛选测试" }, sellerToken);
+        var (_, unreadList) = await Call(HttpMethod.Get, "/api/chat/conversations?filter=UNREAD&page=1&pageSize=100", null, buyerToken);
+        var inUnread = Data(unreadList).TryGetProperty("items", out var uArr)
+            && uArr.EnumerateArray().Any(x => x.GetProperty("id").GetInt64() == setConv);
+        Check("filter=UNREAD 命中存在未读的会话", inUnread);
+
+        await Call(HttpMethod.Post, $"/api/chat/conversations/{setConv}/read", new { lastReadMessageId = long.MaxValue }, buyerToken);
+        var (_, unreadList2) = await Call(HttpMethod.Get, "/api/chat/conversations?filter=UNREAD&page=1&pageSize=100", null, buyerToken);
+        var stillUnread = Data(unreadList2).TryGetProperty("items", out var uArr2)
+            && uArr2.EnumerateArray().Any(x => x.GetProperty("id").GetInt64() == setConv);
+        Check("已读后不再出现在 UNREAD 列表", !stillUnread);
+
+        // 空串清除备注
+        var (sClear, _) = await Call(HttpMethod.Put, $"/api/chat/conversations/{setConv}/settings",
+            new { remark = "" }, buyerToken);
+        var (_, after2) = await Call(HttpMethod.Get, "/api/chat/conversations?page=1&pageSize=100", null, buyerToken);
+        var clearedItem = Data(after2).GetProperty("items").EnumerateArray()
+            .FirstOrDefault(x => x.GetProperty("id").GetInt64() == setConv);
+        var clearedOk = sClear == HttpStatusCode.OK
+            && clearedItem.ValueKind != JsonValueKind.Undefined
+            && clearedItem.GetProperty("remark").ValueKind == JsonValueKind.Null;
+        Check("空串清除备注名", clearedOk);
+
+        foreach (var tk in new[] { buyerToken, sellerToken })
+        {
+            await Call(HttpMethod.Post, $"/api/chat/conversations/{setConv}/read", new { lastReadMessageId = long.MaxValue }, tk);
+            await Call(HttpMethod.Delete, $"/api/chat/conversations/{setConv}", null, tk);
         }
     }
 }
@@ -624,6 +788,18 @@ if (sellerToken.Length > 0 && buyerToken.Length > 0 && adminToken.Length > 0)
                     && nArr.EnumerateArray().Any(x => x.GetProperty("messageType").GetString() == "QUOTE"
                         && x.GetProperty("bizId").GetInt64() == counterQuoteId);
                 Check("还价卡片已推送到会话", hasCounterMsg);
+
+                // 会话内拒绝报价
+                var (_, rqB) = await Call(HttpMethod.Post, $"/api/chat/conversations/{ctConv}/quote",
+                    new { supplyId = ctSupplyId, price = 1.31m, priceUnit, quantity = qty }, buyerToken);
+                long rejQuoteId = Code(rqB) == 0 && Data(rqB).TryGetProperty("id", out var rqe) ? rqe.GetInt64() : 0;
+                if (rejQuoteId > 0)
+                {
+                    var (sRej, rjB) = await Call(HttpMethod.Post, $"/api/chat/conversations/{ctConv}/quotes/{rejQuoteId}/reject", null, sellerToken);
+                    Check("卖家会话内拒绝报价成功且状态 REJECTED", sRej == HttpStatusCode.OK
+                        && Data(rjB).GetProperty("status").GetString() == "REJECTED", $"code={sRej}");
+                }
+                else Check("卖家会话内拒绝报价成功且状态 REJECTED", false, $"quoteId={rejQuoteId} code={Code(rqB)}");
 
                 if (otherConv > 0)
                     await Call(HttpMethod.Delete, $"/api/chat/conversations/{otherConv}", null, buyerToken);

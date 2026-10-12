@@ -4,11 +4,11 @@ const USER_KEY = 'agro_user'
 
 // #ifdef H5
 // H5 走 vite 开发代理(/api -> 后端), 使用相对路径
-const BASE_URL = ''
+export const BASE_URL = ''
 // #endif
 // #ifndef H5
-// 小程序等平台无开发代理, 需填写后端完整地址
-const BASE_URL = 'http://127.0.0.1:8080'
+// 小程序等平台无开发代理, 需填写后端完整地址 (此处为唯一出处, WebSocket 地址亦由此推导)
+export const BASE_URL = 'http://127.0.0.1:8080'
 // #endif
 
 export function getToken() {

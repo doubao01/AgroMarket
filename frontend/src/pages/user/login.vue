@@ -55,6 +55,7 @@
 <script>
 import { authApi } from '../../api/index'
 import { setToken, setUser } from '../../utils/request'
+import { initChat, teardownChat } from '../../utils/chat-store'
 
 export default {
   data() {
@@ -109,6 +110,8 @@ export default {
     afterAuth(res) {
       setToken(res.token)
       setUser(res)
+      teardownChat()
+      initChat()
       uni.showToast({ title: '登录成功' })
       setTimeout(() => {
         const pages = getCurrentPages()
