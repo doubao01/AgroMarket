@@ -141,9 +141,15 @@ cd backend && dotnet run --project AgroMarket.Api
 
 模块位于 `Ai/`，逻辑分层（Domain/Infrastructure/Application/Tools/Api）。LLM 走标准 `/chat/completions` 协议，可对接 DeepSeek/通义/智谱等；配置见 `Ai:*`（`BaseUrl`/`Model`/`ApiKey`，Key 可用环境变量 `Ai__ApiKey` 覆盖），不在代码中硬编码。未配置 LLM 时相关接口返回 `501`，业务不受影响。
 
+对话历史持久化于 `ai_conversation` / `ai_message`（迁移 `05_ai_chat.sql`）：`sessionId` 为空则新建会话，非空且属于当前用户则续聊（他人生成 `403`）。会话在首轮成功后才落库，LLM 失败（如未配置 `501`）不产生空会话。所有 `/api/ai/*` 端点均要求登录（`[RequireAuth]`）。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/ai/chat` | 智能客服/农事助手（简化 ReAct，工具轮次 ≤3，上下文记忆 + 频控） |
+| POST | `/api/ai/chat` | 智能客服/农事助手（简化 ReAct，工具轮次 ≤3，持久化上下文记忆 + 频控） |
+| GET | `/api/ai/conversations` | 当前用户 AI 会话列表（分页） |
+| GET | `/api/ai/conversations/{id}/messages` | 会话消息分页（游标 `beforeId`、`limit`） |
+| PUT | `/api/ai/conversations/{id}` | 重命名会话 |
+| DELETE | `/api/ai/conversations/{id}` | 删除会话（含消息） |
 | POST | `/api/ai/assist/publish` | 内容发布辅助（生成描述/分类/价格区间，仅供表单预填） |
 | POST | `/api/ai/insight` | 大屏智能解读（仅管理员） |
 | POST | `/api/ai/ask` | 大屏数据问答（仅管理员，数字必须来自工具） |
@@ -188,6 +194,7 @@ AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、供
 | 消息 | GET/POST | `/api/messages`、`/api/messages/{id}/read`、`/api/messages/read-all`、`/api/messages/unread-count` |
 | 聊天 | GET/POST/PUT/DELETE | `/api/chat/conversations`、`/api/chat/conversations/{id}`、`.../settings`、`.../messages`、`.../read`、`.../delivered`、`.../typing`、`.../share-product`、`.../quote`、`.../order`、`/api/chat/messages/{id}/recall`、`/api/chat/unread`、`/api/chat/search`、`/api/chat/blocks` |
 | 地址 | GET/POST/DELETE | `/api/addresses`、`/api/addresses/{id}` |
+| AI | GET/POST/PUT/DELETE | `/api/ai/chat`、`/api/ai/conversations`、`/api/ai/conversations/{id}`、`.../messages`、`/api/ai/assist/publish`、`/api/ai/insight`、`/api/ai/ask` |
 | 举报/公告/上传 | - | `/api/reports`、`/api/notices`、`/api/files/upload` |
 | 管理 | GET/POST | `/api/admin/stats|users|auths|supplies|demands|reports|logs` 及对应 audit/freeze/handle 操作 |
 

@@ -717,6 +717,28 @@ if (adminToken.Length > 0 && buyerToken.Length > 0)
 
         var (sAiBadType, _) = await Call(HttpMethod.Post, "/api/ai/assist/publish", new { type = "XXX" }, buyerToken);
         Check("AI 发布辅助非法类型被拒绝(400)", sAiBadType == HttpStatusCode.BadRequest);
+
+        // AI 对话持久化 (会话列表 / 归属校验 / 未配置不落库)
+        var (sAiList, aiList) = await Call(HttpMethod.Get, "/api/ai/conversations", null, buyerToken);
+        var aiTotal0 = Data(aiList).TryGetProperty("total", out var at0) ? at0.GetInt64() : -1;
+        Check("AI 会话列表可访问且返回数组", sAiList == HttpStatusCode.OK && Code(aiList) == 0
+            && Data(aiList).TryGetProperty("items", out _), $"code={Code(aiList)}");
+
+        var (sAiListAfter, aiListAfter) = await Call(HttpMethod.Get, "/api/ai/conversations", null, buyerToken);
+        var aiTotal1 = Data(aiListAfter).TryGetProperty("total", out var at1) ? at1.GetInt64() : -2;
+        Check("AI 未配置(501)时对话不落库", aiTotal0 == aiTotal1, $"before={aiTotal0} after={aiTotal1}");
+
+        var (sAiMsg404, m404) = await Call(HttpMethod.Get, "/api/ai/conversations/99999999/messages", null, buyerToken);
+        Check("访问不存在 AI 会话消息返回 404", sAiMsg404 == HttpStatusCode.NotFound || Code(m404) == 404, $"code={Code(m404)}");
+
+        var (sAiDel404, d404) = await Call(HttpMethod.Delete, "/api/ai/conversations/99999999", null, buyerToken);
+        Check("删除不存在 AI 会话返回 404", sAiDel404 == HttpStatusCode.NotFound || Code(d404) == 404, $"code={Code(d404)}");
+
+        var (sAiRename404, r404) = await Call(HttpMethod.Put, "/api/ai/conversations/99999999", new { title = "改名" }, buyerToken);
+        Check("重命名不存在 AI 会话返回 404", sAiRename404 == HttpStatusCode.NotFound || Code(r404) == 404, $"code={Code(r404)}");
+
+        var (sAiUnauth, _) = await Call(HttpMethod.Get, "/api/ai/conversations");
+        Check("未登录访问 AI 会话列表返回 401", sAiUnauth == HttpStatusCode.Unauthorized);
     }
 }
 

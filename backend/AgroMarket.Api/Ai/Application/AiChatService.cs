@@ -7,23 +7,26 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace AgroMarket.Api.Ai.Application;
 
-/// <summary>AI 客服助手: 简化 ReAct 循环 (意图 -> 工具调用 -> 回答), 工具轮次有硬上限防失控。</summary>
+/// <summary>AI 客服助手: 简化 ReAct 循环 (意图 -> 工具调用 -> 回答), 工具轮次有硬上限防失控。对话历史持久化。</summary>
 public class AiChatService
 {
     private const int MaxToolRounds = 3;
     private const int MaxInputLength = 2000;
     private const int MaxHistoryMessages = 10;
     private const int RateLimitPerMinute = 15;
+    private const int MaxTitleLength = 30;
 
     private readonly ILlmClient _llm;
     private readonly AiToolRegistry _tools;
     private readonly IMemoryCache _cache;
+    private readonly AiChatRepository _repo;
 
-    public AiChatService(ILlmClient llm, AiToolRegistry tools, IMemoryCache cache)
+    public AiChatService(ILlmClient llm, AiToolRegistry tools, IMemoryCache cache, AiChatRepository repo)
     {
         _llm = llm;
         _tools = tools;
         _cache = cache;
+        _repo = repo;
     }
 
     private const string SystemPrompt =
@@ -44,8 +47,20 @@ public class AiChatService
 
         EnforceRateLimit(userId);
 
-        var sessionId = string.IsNullOrWhiteSpace(req.SessionId) ? Guid.NewGuid().ToString("N") : req.SessionId!;
-        var history = GetHistory(sessionId);
+        // 延迟建库: 先复用已有会话(校验归属), 新建会话待首轮成功后再落库, 避免 LLM 失败产生空会话。
+        AiConversationRow? conv = null;
+        var history = new List<ChatMessage>();
+        if (!string.IsNullOrWhiteSpace(req.SessionId))
+        {
+            var existing = await _repo.GetBySessionAsync(req.SessionId.Trim());
+            if (existing is not null)
+            {
+                if (existing.UserId != userId)
+                    throw new BizException("无权访问该会话", ErrorCodes.Forbidden);
+                conv = existing;
+                history = await LoadHistoryAsync(conv.Id);
+            }
+        }
 
         var messages = new List<ChatMessage> { ChatMessage.System(SystemPrompt) };
         messages.AddRange(history);
@@ -93,12 +108,85 @@ public class AiChatService
         if (string.IsNullOrWhiteSpace(reply))
             reply = "抱歉, 我暂时无法回答这个问题, 请换个说法或咨询客服。";
 
-        history.Add(ChatMessage.User(req.Message));
-        history.Add(ChatMessage.Assistant(reply));
-        TrimHistory(history);
-        SaveHistory(sessionId, history);
+        if (conv is null)
+        {
+            var sid = string.IsNullOrWhiteSpace(req.SessionId)
+                ? Guid.NewGuid().ToString("N")
+                : req.SessionId!.Trim();
+            conv = await _repo.CreateAsync(userId, sid);
+        }
 
-        return new AiChatResponse(reply, sessionId, toolsUsed.Distinct().ToList(), totalTokens);
+        var distinctTools = toolsUsed.Distinct().ToList();
+        var toolsJson = distinctTools.Count > 0
+            ? System.Text.Json.JsonSerializer.Serialize(distinctTools)
+            : null;
+        await _repo.AppendTurnAsync(conv.Id, req.Message, reply, toolsJson, totalTokens,
+            BuildTitle(req.Message));
+
+        return new AiChatResponse(reply, conv.SessionId, distinctTools, totalTokens);
+    }
+
+    // ---------------- 会话管理 ----------------
+
+    /// <summary>会话列表(分页)。</summary>
+    public async Task<AiConversationPageDto> ListConversationsAsync(long userId, int page, int pageSize)
+    {
+        if (page < 1) page = 1;
+        if (pageSize is < 1 or > 100) pageSize = 20;
+        var items = await _repo.ListAsync(userId, pageSize, (page - 1) * pageSize);
+        var total = await _repo.CountAsync(userId);
+        return new AiConversationPageDto(items.Select(AiChatRepository.MapConversation).ToList(), total);
+    }
+
+    /// <summary>会话消息分页(游标 beforeId, 取更早消息)。</summary>
+    public async Task<AiMessagePageDto> ListMessagesAsync(long userId, long convId, long? beforeId, int limit)
+    {
+        await EnsureOwnedAsync(userId, convId);
+        if (limit is < 1 or > 50) limit = 20;
+        var rows = await _repo.ListMessagesAsync(convId, beforeId, limit + 1);
+        var hasMore = rows.Count > limit;
+        if (hasMore) rows = rows.Take(limit).ToList();
+        var items = rows.Select(AiChatRepository.MapMessage).ToList();
+        return new AiMessagePageDto(items, hasMore, hasMore && items.Count > 0 ? items[0].Id : null);
+    }
+
+    public async Task DeleteConversationAsync(long userId, long convId)
+    {
+        if (!await _repo.DeleteAsync(convId, userId))
+            throw new BizException("会话不存在", ErrorCodes.NotFound);
+    }
+
+    public async Task RenameConversationAsync(long userId, long convId, string title)
+    {
+        await EnsureOwnedAsync(userId, convId);
+        title = (title ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(title))
+            throw new BizException("标题不能为空");
+        if (title.Length > MaxTitleLength) title = title[..MaxTitleLength];
+        await _repo.RenameAsync(convId, userId, title);
+    }
+
+    // ---------------- 内部 ----------------
+
+    private async Task EnsureOwnedAsync(long userId, long convId)
+    {
+        if (await _repo.GetOwnedAsync(convId, userId) is null)
+            throw new BizException("会话不存在", ErrorCodes.NotFound);
+    }
+
+    private async Task<List<ChatMessage>> LoadHistoryAsync(long convId)
+    {
+        var rows = await _repo.GetRecentMessagesAsync(convId, MaxHistoryMessages);
+        return rows.Select(r => r.Role == "ASSISTANT"
+            ? ChatMessage.Assistant(r.Content)
+            : ChatMessage.User(r.Content)).ToList();
+    }
+
+    private static string BuildTitle(string message)
+    {
+        var t = (message ?? "").Trim().Replace('\n', ' ');
+        if (t.Length > MaxTitleLength) t = t[..MaxTitleLength];
+        return string.IsNullOrWhiteSpace(t) ? "新对话" : t;
     }
 
     private void EnforceRateLimit(long userId)
@@ -112,19 +200,5 @@ public class AiChatService
         if (count >= RateLimitPerMinute)
             throw new BizException("操作过于频繁, 请稍后再试", ErrorCodes.Conflict);
         _cache.Set(key, count + 1, TimeSpan.FromMinutes(1));
-    }
-
-    private List<ChatMessage> GetHistory(string sessionId)
-        => _cache.Get<List<ChatMessage>>($"ai_hist_{sessionId}") ?? new List<ChatMessage>();
-
-    private void SaveHistory(string sessionId, List<ChatMessage> history)
-        => _cache.Set($"ai_hist_{sessionId}", history, TimeSpan.FromHours(2));
-
-    private static void TrimHistory(List<ChatMessage> history)
-    {
-        // 保留最近 N 条 (成对裁剪, 避免出现孤立 assistant)
-        var max = MaxHistoryMessages;
-        if (history.Count > max)
-            history.RemoveRange(0, history.Count - max);
     }
 }
