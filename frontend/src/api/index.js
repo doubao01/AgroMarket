@@ -140,6 +140,10 @@ export const dashboardApi = {
 
 export const aiApi = {
   chat: (data) => http.post('/api/ai/chat', data, { auth: true }),
+  conversations: (query) => http.get('/api/ai/conversations', query || {}, { auth: true }),
+  messages: (id, query) => http.get(`/api/ai/conversations/${id}/messages`, query || {}, { auth: true }),
+  removeConversation: (id) => http.del('/api/ai/conversations/' + id, {}, { auth: true }),
+  renameConversation: (id, title) => http.put(`/api/ai/conversations/${id}`, { title }, { auth: true }),
   assistPublish: (data) => http.post('/api/ai/assist/publish', data, { auth: true }),
   insight: () => http.post('/api/ai/insight', {}, { auth: true }),
   ask: (question) => http.post('/api/ai/ask', { question }, { auth: true }),
