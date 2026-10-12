@@ -58,7 +58,9 @@ builder.Services.AddScoped<AgroMarket.Api.Ai.Tools.IAiTool, AgroMarket.Api.Ai.To
 builder.Services.AddScoped<AgroMarket.Api.Ai.Tools.IAiTool, AgroMarket.Api.Ai.Tools.SearchSuppliesTool>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Tools.IAiTool, AgroMarket.Api.Ai.Tools.SearchDemandsTool>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Tools.IAiTool, AgroMarket.Api.Ai.Tools.MyOrdersTool>();
+builder.Services.AddScoped<AgroMarket.Api.Ai.Tools.IAiTool, AgroMarket.Api.Ai.Tools.RegionDistributionTool>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Tools.AiToolRegistry>();
+builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiRateLimiter>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiChatService>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiAssistService>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiInsightService>();

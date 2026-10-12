@@ -9,15 +9,21 @@ namespace AgroMarket.Api.Ai.Application;
 /// <summary>大屏数据智能解读: 基于实时统计快照生成结论; 问答时数字必须来自工具, 防幻觉。</summary>
 public class AiInsightService
 {
+    private const int MaxQuestionLength = 2000;
+    private const int AskRateLimitPerMinute = 20;
+    private const int InsightRateLimitPerMinute = 10;
+
     private readonly ILlmClient _llm;
     private readonly DashboardService _dashboard;
     private readonly AiToolRegistry _tools;
+    private readonly AiRateLimiter _limiter;
 
-    public AiInsightService(ILlmClient llm, DashboardService dashboard, AiToolRegistry tools)
+    public AiInsightService(ILlmClient llm, DashboardService dashboard, AiToolRegistry tools, AiRateLimiter limiter)
     {
         _llm = llm;
         _dashboard = dashboard;
         _tools = tools;
+        _limiter = limiter;
     }
 
     private const string InsightPrompt =
@@ -27,6 +33,8 @@ public class AiInsightService
 
     public async Task<AiInsightResponse> InsightAsync(long adminId, CancellationToken ct = default)
     {
+        _limiter.Check(adminId, InsightRateLimitPerMinute);
+
         var overview = await _dashboard.GetOverviewAsync(adminId);
         var trend = await _dashboard.GetTrendAsync(adminId, "7d");
         var region = await _dashboard.GetRegionAsync(adminId);
@@ -77,6 +85,8 @@ public class AiInsightService
     {
         if (string.IsNullOrWhiteSpace(req.Question))
             throw new Common.BizException("问题不能为空");
+        AiRateLimiter.EnsureLength(req.Question, MaxQuestionLength, "问题");
+        _limiter.Check(adminId, AskRateLimitPerMinute);
 
         var messages = new List<ChatMessage>
         {
@@ -94,7 +104,7 @@ public class AiInsightService
                 answer = resp.Content;
                 break;
             }
-            messages.Add(ChatMessage.Assistant(resp.Content));
+            messages.Add(ChatMessage.Assistant(resp.Content, resp.ToolCalls));
             foreach (var call in resp.ToolCalls)
             {
                 string result;
@@ -105,7 +115,7 @@ public class AiInsightService
                     facts.Add($"{call.Name}: {result}");
                 }
                 else result = "{\"error\":\"未知工具\"}";
-                messages.Add(ChatMessage.Tool(result));
+                messages.Add(ChatMessage.Tool(call.Id, call.Name, result));
             }
         }
 
