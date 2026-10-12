@@ -4,7 +4,7 @@
     <view class="hero">
       <view class="hero-main">
         <view class="hero-title">息县农贸通 · 数据大屏</view>
-        <view class="hero-sub">统计口径：真实成交（不含演示与模拟支付）</view>
+        <view class="hero-sub">统计口径：真实成交（不含演示与模拟支付） · 每 30 秒自动刷新</view>
       </view>
       <text class="theme-toggle" @tap="toggleTheme">{{ dark ? '亮色' : '投屏' }}</text>
     </view>
@@ -26,14 +26,11 @@
             :class="{ active: trendRange === r.key }" @tap="switchTrendRange(r.key)">{{ r.label }}</text>
         </view>
       </view>
-      <view class="bars">
-        <view class="bar-col" v-for="(p, i) in trend" :key="i">
-          <view class="bar-wrap">
-            <view class="bar" :style="{ height: barHeight(p.orderCount, trendMax) }"></view>
-          </view>
-          <text class="bar-x">{{ shortDate(p.date) }}</text>
-        </view>
-      </view>
+      <u-chart
+        v-if="trend.length"
+        chart-type="mix" :categories="trendCats" :series="trendSeries" :dark="dark" :height="260"
+      />
+      <view v-if="!trend.length" class="empty">暂无数据</view>
       <view class="trend-legend">
         <text>订单量合计 {{ trendTotal }} 单</text>
         <text>成交额 {{ trendAmount }} 元</text>
@@ -43,16 +40,11 @@
     <!-- 品类分布 -->
     <view class="panel">
       <view class="panel-head"><text class="panel-title">品类供需</text></view>
-      <view class="row-list">
-        <view class="row" v-for="c in category" :key="c.categoryName">
-          <text class="row-name">{{ c.categoryName }}</text>
-          <view class="row-bar-wrap">
-            <view class="row-bar" :style="{ width: pct(c.supplyCount, catMax) }"></view>
-          </view>
-          <text class="row-val">供{{ c.supplyCount }} / 采{{ c.demandCount }}</text>
-        </view>
-        <view v-if="!category.length" class="empty">暂无数据</view>
-      </view>
+      <u-chart
+        v-if="category.length"
+        chart-type="column" :categories="categoryCats" :series="categorySeries" :dark="dark" :height="240"
+      />
+      <view v-if="!category.length" class="empty">暂无数据</view>
     </view>
 
     <!-- 乡镇分布 -->
@@ -84,14 +76,11 @@
     <!-- 消息活跃 -->
     <view class="panel">
       <view class="panel-head"><text class="panel-title">消息活跃</text></view>
-      <view class="bars small">
-        <view class="bar-col" v-for="(p, i) in chatActivity" :key="i">
-          <view class="bar-wrap">
-            <view class="bar green" :style="{ height: barHeight(p.messageCount, chatMax) }"></view>
-          </view>
-          <text class="bar-x">{{ shortDate(p.date) }}</text>
-        </view>
-      </view>
+      <u-chart
+        v-if="chatActivity.length"
+        chart-type="column" :categories="chatCats" :series="chatSeries" :dark="dark" :height="200" :legend="false"
+      />
+      <view v-if="!chatActivity.length" class="empty">暂无数据</view>
     </view>
 
     <!-- AI 解读 -->
@@ -120,8 +109,10 @@
 
 <script>
 import { dashboardApi, aiApi } from '../../api/index.js'
+import UChart from '../../components/u-chart.vue'
 
 export default {
+  components: { UChart },
   data() {
     return {
       metrics: [],
@@ -142,12 +133,28 @@ export default {
       askAnswer: '',
       loading: false,
       dark: false,
+      autoTimer: null,
     }
   },
   computed: {
-    trendMax() { return Math.max(1, ...this.trend.map(p => p.orderCount)) },
-    chatMax() { return Math.max(1, ...this.chatActivity.map(p => p.messageCount)) },
-    catMax() { return Math.max(1, ...this.category.map(c => c.supplyCount)) },
+    trendCats() { return this.trend.map(p => this.shortDate(p.date)) },
+    trendSeries() {
+      return [
+        { name: '成交额(元)', type: 'line', data: this.trend.map(p => Number(p.dealAmount || 0)) },
+        { name: '订单量', type: 'column', data: this.trend.map(p => p.orderCount || 0) },
+      ]
+    },
+    categoryCats() { return this.category.map(c => c.categoryName) },
+    categorySeries() {
+      return [
+        { name: '供应', type: 'column', data: this.category.map(c => c.supplyCount || 0) },
+        { name: '采购', type: 'column', data: this.category.map(c => c.demandCount || 0) },
+      ]
+    },
+    chatCats() { return this.chatActivity.map(p => this.shortDate(p.date)) },
+    chatSeries() {
+      return [{ name: '消息数', type: 'column', data: this.chatActivity.map(p => p.messageCount || 0) }]
+    },
     regionMax() { return Math.max(1, ...this.regionTop.map(r => r.supplyCount + r.demandCount)) },
     trendTotal() { return this.trend.reduce((s, p) => s + (p.orderCount || 0), 0) },
     trendAmount() { return this.trend.reduce((s, p) => s + Number(p.dealAmount || 0), 0).toFixed(2) },
@@ -155,13 +162,17 @@ export default {
   onLoad() {
     try { this.dark = uni.getStorageSync('dash_dark') === 1 } catch (e) {}
     this.loadAll()
+    this.autoTimer = setInterval(() => { this.loadAll(true) }, 30000)
   },
+  onHide() { this.stopAuto() },
+  onUnload() { this.stopAuto() },
   onPullDownRefresh() {
     this.loadAll().then(() => uni.stopPullDownRefresh())
   },
   methods: {
-    async loadAll() {
-      this.loading = true
+    stopAuto() { if (this.autoTimer) { clearInterval(this.autoTimer); this.autoTimer = null } },
+    async loadAll(silent) {
+      if (!silent) this.loading = true
       try {
         const [ov, cat, reg, us] = await Promise.all([
           dashboardApi.overview(),
@@ -178,7 +189,7 @@ export default {
         this.users = us || []
         await Promise.all([this.loadTrend(), this.loadChat()])
       } catch (e) {
-        uni.showToast({ title: (e && e.msg) || '加载失败', icon: 'none' })
+        if (!silent) uni.showToast({ title: (e && e.msg) || '加载失败', icon: 'none' })
       } finally {
         this.loading = false
       }
@@ -204,10 +215,6 @@ export default {
     switchTrendRange(key) {
       this.trendRange = key
       Promise.all([this.loadTrend(), this.loadChat()])
-    },
-    barHeight(v, max) {
-      const h = max > 0 ? (v / max) * 100 : 0
-      return Math.max(v > 0 ? 4 : 0, h) + '%'
     },
     pct(v, max) {
       const p = max > 0 ? (v / max) * 100 : 0
@@ -271,16 +278,7 @@ export default {
 .range-tab { font-size: 22rpx; color: #7a8a80; padding: 6rpx 16rpx; border-radius: 20rpx; margin-left: 8rpx; background: #f0f3f1; }
 .range-tab.active { background: #2e8b57; color: #fff; }
 
-.bars { display: flex; align-items: flex-end; height: 240rpx; }
-.bars.small { height: 180rpx; }
-.bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
-.bar-wrap { width: 100%; height: 100%; display: flex; align-items: flex-end; justify-content: center; }
-.bar { width: 60%; max-width: 32rpx; background: #2e8b57; border-radius: 6rpx 6rpx 0 0; min-height: 2rpx; }
-.bar.orange { background: #f2952b; }
-.bar.green { background: #3aa76d; }
-.bar-x { font-size: 18rpx; color: #a7b3ac; margin-top: 8rpx; transform: scale(0.85); }
 .trend-legend { display: flex; justify-content: space-between; margin-top: 16rpx; font-size: 22rpx; color: #7a8a80; }
-
 .row-list { display: flex; flex-direction: column; }
 .row { display: flex; align-items: center; margin-bottom: 18rpx; }
 .row-name { width: 150rpx; font-size: 24rpx; color: #22322a; }
