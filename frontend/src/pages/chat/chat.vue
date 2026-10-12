@@ -121,6 +121,7 @@
 import { chatApi, uploadImageSmart, supplyApi, demandApi } from '../../api/index'
 import { requireLogin, getUser } from '../../utils/request'
 import { createChatSocket } from '../../utils/chat-socket'
+import { reportTarget } from '../../utils/report'
 
 const TIME_GAP = 5 * 60 * 1000
 const RECALL_WINDOW = 2 * 60 * 1000
@@ -396,6 +397,7 @@ export default {
       if (m.messageType === 'TEXT' && m.content) { items.push('复制'); actions.push('copy') }
       if (m.status !== 'RECALLED') { items.push('引用'); actions.push('quote') }
       if (this.mine(m) && m.status !== 'RECALLED' && this.canRecall(m)) { items.push('撤回'); actions.push('recall') }
+      if (!this.mine(m)) { items.push('举报对方'); actions.push('report') }
       items.push('拉黑对方'); actions.push('block')
       if (!items.length) return
       uni.showActionSheet({
@@ -405,9 +407,15 @@ export default {
           if (act === 'copy') uni.setClipboardData({ data: m.content })
           else if (act === 'quote') { this.replyTo = m }
           else if (act === 'recall') this.recall(m)
+          else if (act === 'report') this.reportPeer()
           else if (act === 'block') this.blockPeer()
         },
       })
+    },
+    reportPeer() {
+      const peerId = this.peer && this.peer.id
+      if (!peerId) return
+      reportTarget('USER', peerId, '举报该用户')
     },
     async blockPeer() {
       const peerId = this.peer && this.peer.id

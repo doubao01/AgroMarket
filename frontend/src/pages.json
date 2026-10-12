@@ -19,6 +19,7 @@
     { "path": "pages/user/auth", "style": { "navigationBarTitleText": "主体认证" } },
     { "path": "pages/user/listings", "style": { "navigationBarTitleText": "我的发布", "enablePullDownRefresh": true } },
     { "path": "pages/user/favorites", "style": { "navigationBarTitleText": "我的收藏", "enablePullDownRefresh": true } },
+    { "path": "pages/user/blocks", "style": { "navigationBarTitleText": "黑名单", "enablePullDownRefresh": true } },
     { "path": "pages/address/list", "style": { "navigationBarTitleText": "收货地址" } },
     { "path": "pages/notice/index", "style": { "navigationBarTitleText": "平台公告" } },
     { "path": "pages/admin/index", "style": { "navigationBarTitleText": "管理后台" } },

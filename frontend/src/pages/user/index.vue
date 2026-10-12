@@ -37,6 +37,7 @@
         <view class="menu-item" @tap="go('/pages/order/list')"><text>我的订单</text><text class="muted">›</text></view>
         <view class="menu-item" @tap="go('/pages/quote/list')"><text>我的报价</text><text class="muted">›</text></view>
         <view class="menu-item" @tap="go('/pages/user/favorites')"><text>我的收藏</text><text class="muted">›</text></view>
+        <view class="menu-item" @tap="go('/pages/user/blocks')"><text>黑名单</text><text class="muted">›</text></view>
         <view class="menu-item" @tap="go('/pages/address/list')"><text>收货地址</text><text class="muted">›</text></view>
         <view class="menu-item" @tap="go('/pages/user/auth')"><text>主体认证</text><text class="accent">{{ authStatus }}</text></view>
         <view class="menu-item" @tap="go('/pages/user/profile')"><text>个人资料</text><text class="muted">›</text></view>
