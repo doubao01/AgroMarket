@@ -43,6 +43,7 @@ x-api-env: &api-env
   Federation__SyncIntervalMinutes: "${FEDERATION_SYNC_INTERVAL_MINUTES:-30}"
   Federation__BackfillDays: "1"
   Federation__RecordWindowHours: "24"
+  Federation__IncludeSelfInAggregate: "${FEDERATION_INCLUDE_SELF_IN_AGGREGATE:-true}"
   CorsOrigins__0: ${CORS_ORIGIN:-http://localhost:5173}
 
 x-api-common: &api-common

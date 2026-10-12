@@ -11,12 +11,15 @@ public class FederationAdminService
 {
     private readonly FederationRepository _repo;
     private readonly FederationTokenService _tokens;
+    private readonly FederationSnapshotBuilder _snapshot;
     private readonly FederationOptions _opt;
 
-    public FederationAdminService(FederationRepository repo, FederationTokenService tokens, IOptions<FederationOptions> opt)
+    public FederationAdminService(FederationRepository repo, FederationTokenService tokens,
+        FederationSnapshotBuilder snapshot, IOptions<FederationOptions> opt)
     {
         _repo = repo;
         _tokens = tokens;
+        _snapshot = snapshot;
         _opt = opt.Value;
     }
 
@@ -132,6 +135,40 @@ public class FederationAdminService
         var (from, to) = ParseRange(range);
         var byNode = await _repo.AggregateByNodeAsync(from, to);
         var byDay = await _repo.AggregateByDayAsync(from, to);
+
+        // 全景开关: 把本节点自身指标并入汇聚结果 (来源节点=本节点编码)。
+        // 若已存在同编码的接收数据 (例如自身也曾作为对端上报过), 则不重复叠加。
+        var selfCode = _opt.NodeCode;
+        if (_opt.IncludeSelfInAggregate && !string.IsNullOrWhiteSpace(selfCode)
+            && !byNode.Any(n => n.SourceNodeCode == selfCode))
+        {
+            var local = await _snapshot.BuildMetricsAsync(from, to);
+            byNode.Add(new FedNodeStatRow
+            {
+                SourceNodeCode = selfCode,
+                OrderCount = local.Sum(m => m.OrderCount),
+                TradeAmount = local.Sum(m => m.TradeAmount),
+            });
+
+            var dayMap = byDay.ToDictionary(p => p.StatDate, p => p);
+            foreach (var m in local)
+            {
+                if (!dayMap.TryGetValue(m.StatDate, out var point))
+                {
+                    point = new FedAggPointRow { StatDate = m.StatDate };
+                    byDay.Add(point);
+                    dayMap[m.StatDate] = point;
+                }
+                point.OrderCount += m.OrderCount;
+                point.TradeAmount += m.TradeAmount;
+                point.UserCount += m.UserCount;
+                point.SupplyCount += m.SupplyCount;
+                point.DemandCount += m.DemandCount;
+            }
+            byDay.Sort((a, b) => string.CompareOrdinal(a.StatDate, b.StatDate));
+            byNode = byNode.OrderByDescending(n => n.OrderCount).ToList();
+        }
+
         return new FedAggregateDto
         {
             Range = range ?? "30d",
