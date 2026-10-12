@@ -178,7 +178,7 @@ export default {
         else { await favoriteApi.add('SUPPLY', this.id); this.faved = true }
       } catch (e) {}
     },
-    goEdit() { uni.showToast({ title: '请在“我的发布”中编辑', icon: 'none' }) },
+    goEdit() { uni.navigateTo({ url: '/pages/supply/publish?id=' + this.item.id }) },
     report() { reportTarget('SUPPLY', this.item.id, '举报该供应信息') },
     previewImg(i) {
       uni.previewImage({ urls: this.item.images.map(x => x.url), current: i })
