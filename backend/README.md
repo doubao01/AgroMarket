@@ -28,6 +28,17 @@ AgroMarket.Api/
 │   ├── Application/                  # AiChatService / AiAssistService / AiInsightService
 │   ├── Tools/                        # IAiTool / AiToolRegistry / 内置只读工具
 │   └── Api/AiController.cs           # /api/ai 接口
+├── Federation/                # 多节点联动模块（数据上报 / 同步，逻辑分层）
+│   ├── Dtos/FederationDtos.cs         # 节点/批次/指标/明细/汇聚 DTO
+│   ├── Infrastructure/FederationOptions.cs   # Federation:* 配置
+│   ├── Infrastructure/FederationRepository.cs # Dapper 数据访问（幂等 upsert）
+│   ├── Infrastructure/FedHttpClient.cs        # 对端 HTTP 客户端（推/拉）
+│   ├── Application/FederationTokenService.cs  # 节点 JWT 签发/校验
+│   ├── Application/FederationSnapshotBuilder.cs # 本地指标+脱敏明细生成
+│   ├── Application/FederationService.cs       # 接收/推送/拉取/导出
+│   ├── Application/FederationAdminService.cs  # 管理端查询/汇聚/节点管理
+│   ├── Application/FederationSyncWorker.cs    # 后台定时同步
+│   └── Api/                   # RequireNode 过滤器 + 节点/管理端控制器
 └── Controllers/               # Auth/Region/Market/Trade/Support/Admin/Dashboard/Payment/PaymentNotify
 ```
 
@@ -60,6 +71,11 @@ cd backend && dotnet run --project AgroMarket.Api
 | `Payment:Alipay:*` | 支付宝应用参数（AppId/PrivateKey/AlipayPublicKey/Gateway/NotifyUrl/ReturnUrl），配置齐全后渠道可用 |
 | `Storage:LocalRoot` | 本地上传目录（默认 uploads，映射到 /uploads） |
 | `Storage:ChunkSizeKb` | 分片上传分片大小 KB（默认 1024） |
+| `Federation:Enabled` | 是否启用多节点联动（启用时必须配置下方身份与密钥） |
+| `Federation:NodeCode` / `NodeName` / `Level` / `RegionCode` | 本节点身份（`Level`∈PROVINCE/CITY/COUNTY） |
+| `Federation:SharedKey` | 节点令牌签名密钥（HS256，**≥32 字节**，全联邦共享） |
+| `Federation:AutoSync` / `SyncIntervalMinutes` | 定时同步开关与周期（分钟） |
+| `Federation:BackfillDays` / `RecordWindowHours` / `MaxRecordsPerPush` / `TokenDays` | 上报回补天数 / 明细时间窗 / 单批明细上限 / 令牌有效期 |
 | `CorsOrigins` | 允许的前端来源 |
 
 环境变量使用双下划线映射，例如 `Jwt__SecretKey`、`ConnectionStrings__Default`。
@@ -158,6 +174,15 @@ cd backend && dotnet run --project AgroMarket.Api
 
 AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡镇地区分布、供应搜索、需求搜索、我的订单。工具调用遵循 OpenAI 协议（回传 assistant `tool_calls` 与 tool `tool_call_id`），轮次上限 3。AI 端点均做输入长度上限与按用户频控（`AiRateLimiter`）。严禁任意 SQL、下单/支付等写操作与跨用户隐私数据。设计详见 `当前工作区/.monkeycode/docs/ai-dashboard-design.md`。
 
+## 多节点联动（数据上报 / 同步）
+
+面向"多个县域 + 省级"的扁平多节点，提供业务数据上报与双向同步。模块位于 `Federation/`。
+
+- **节点身份**：`FederationTokenService` 用 `Federation:SharedKey`（HS256）签发/校验节点 JWT（`issuer/audience=AgroMarketFederation`），claims 含 `node_code/node_name/node_level/region_code`，与用户登录 JWT 隔离。`[RequireNode]` + `RequireNodeFilter`（全局注册）从 `Authorization: Bearer` 或 `X-Node-Token` 解析节点身份。
+- **数据内容**：`FederationSnapshotBuilder` 生成本节点"按天汇总指标 + 脱敏业务明细"。指标口径复用 `DashboardService.RealOrderWhere`（真实成交）；明细仅结构化业务字段，自由文本经 `PiiMasker`（去手机号/身份证/邮箱），订单买卖双方为不可逆假名 `ref_xxx`。
+- **同步**：`FederationService` 负责推送/拉取/导出/接收；`FederationSyncWorker` 按 `Federation:SyncIntervalMinutes` 定时执行（`AutoSync` 控制）。对端未配置 `node_token` 时自动使用本节点令牌。全部写入幂等：指标 `来源+日期`、明细 `来源+类型+外部ID`、批次 `来源+批次号`。
+- **接收校验**：节点上报的 `payload.nodeCode` 必须与令牌身份一致，否则 403。
+
 ## 文件上传（断点续传）
 - `POST /api/files/upload/init`：初始化分片会话，返回 `uploadId`、`chunkSize`、`totalChunks`。
 - `GET /api/files/upload/status?uploadId=`：查询已上传分片，用于断点续传。
@@ -199,6 +224,8 @@ AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡
 | AI | GET/POST/PUT/DELETE | `/api/ai/chat`、`/api/ai/conversations`、`/api/ai/conversations/{id}`、`.../messages`、`/api/ai/assist/publish`、`/api/ai/insight`、`/api/ai/ask` |
 | 举报/公告/上传 | - | `/api/reports`、`/api/notices`、`/api/files/upload` |
 | 管理 | GET/POST | `/api/admin/stats|users|auths|supplies|demands|reports|logs` 及对应 audit/freeze/handle 操作 |
+| 联动(节点间) | GET/POST | `/api/federation/node/ping`、`/api/federation/node/reports`、`/api/federation/node/export?since=&limit=`（节点令牌鉴权） |
+| 联动(管理端) | GET/POST/PUT/DELETE | `/api/admin/federation/self|nodes|nodes/token|reports|metrics|records|aggregate|sync/push|sync/pull`（仅管理员） |
 
 列表查询参数（供应/采购）：`keyword`、`categoryId`、`priceMin/Max`、`townId`、`villageId`、`townIncludeVillages`、`orderBy`、`page`、`pageSize`；`status=PUBLIC`（默认）或 `MINE`（我的，需登录）。
 
@@ -210,7 +237,7 @@ dotnet build AgroMarket.Api/AgroMarket.Api.csproj
 dotnet run --project AgroMarket.Tests
 ```
 
-覆盖：健康检查、未登录 401、密码登录、管理员统计（区分演示成交额）、越权 403、公开列表、报价→接受→下单→确认→未支付禁止发货→渠道不可用 501→模拟支付→发货→收货完整状态机、采购需求报价转订单、站内聊天（会话去重、消息幂等、未读/已读、非成员 403、删除仅对己生效）、WebSocket 实时通道、微信式富消息（图片/引用/撤回/送达/输入状态/对端游标）、实时推送（`read`/`delivered`/`typing`/`recall` 推送至对端）、会话设置（置顶/免打扰/备注名回显、备注超长 400、空串清除、`filter=UNREAD` 命中与已读后移出）、从聊天转订单（分享商品/会话内报价/直接下单/订单卡片推送/会话内还价·接受·拒绝）、拉黑管理，以及 AI E2E（内置 Mock LLM 强校验 tool_call_id，自动验证两轮工具调用、titleSuggestions、anomalies）。
+覆盖：健康检查、未登录 401、密码登录、管理员统计（区分演示成交额）、越权 403、公开列表、报价→接受→下单→确认→未支付禁止发货→渠道不可用 501→模拟支付→发货→收货完整状态机、采购需求报价转订单、站内聊天（会话去重、消息幂等、未读/已读、非成员 403、删除仅对己生效）、WebSocket 实时通道、微信式富消息（图片/引用/撤回/送达/输入状态/对端游标）、实时推送（`read`/`delivered`/`typing`/`recall` 推送至对端）、会话设置（置顶/免打扰/备注名回显、备注超长 400、空串清除、`filter=UNREAD` 命中与已读后移出）、从聊天转订单（分享商品/会话内报价/直接下单/订单卡片推送/会话内还价·接受·拒绝）、拉黑管理，以及 AI E2E（内置 Mock LLM 强校验 tool_call_id，自动验证两轮工具调用、titleSuggestions、anomalies），与多节点联动（节点令牌鉴权、上报接收与幂等、上报身份不一致 403、推送/拉取、批次审计、跨节点汇聚、明细脱敏）。
 
 ## 数据一致性约定
 

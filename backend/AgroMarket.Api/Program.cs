@@ -3,6 +3,9 @@ using AgroMarket.Api.Common;
 using AgroMarket.Api.Data;
 using AgroMarket.Api.Services;
 using AgroMarket.Api.Services.Payments;
+using AgroMarket.Api.Federation.Api;
+using AgroMarket.Api.Federation.Application;
+using AgroMarket.Api.Federation.Infrastructure;
 using Microsoft.AspNetCore.HttpOverrides;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -20,6 +23,11 @@ if (!builder.Environment.IsDevelopment()
     && builder.Configuration.GetValue<bool>("Ai:Enabled")
     && string.IsNullOrWhiteSpace(builder.Configuration["Ai:ApiKey"]))
     throw new InvalidOperationException("Ai:ApiKey is required when Ai:Enabled is true outside Development.");
+
+// 联动配置校验: 一旦启用, 身份与共享密钥必须齐备
+var fedOptions = builder.Configuration.GetSection(FederationOptions.SectionName).Get<FederationOptions>() ?? new FederationOptions();
+if (fedOptions.Enabled && !fedOptions.HasIdentity)
+    throw new InvalidOperationException("Federation:Enabled 为 true 时必须配置 Federation:NodeCode/NodeName 与 Federation:SharedKey(>=32 字节)。");
 
 // Services
 builder.Services.AddSingleton<IDbConnectionFactory, MySqlConnectionFactory>();
@@ -65,6 +73,16 @@ builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiChatService>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiAssistService>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiInsightService>();
 
+// 节点联动 (多节点数据上报 / 同步): 未配置 SharedKey 时节点接口返回 401/400, 不影响业务
+builder.Services.Configure<FederationOptions>(builder.Configuration.GetSection(FederationOptions.SectionName));
+builder.Services.AddSingleton<FederationTokenService>();
+builder.Services.AddScoped<FederationRepository>();
+builder.Services.AddScoped<FederationSnapshotBuilder>();
+builder.Services.AddScoped<FederationService>();
+builder.Services.AddScoped<FederationAdminService>();
+builder.Services.AddHttpClient<FedHttpClient>(c => c.Timeout = TimeSpan.FromSeconds(30));
+builder.Services.AddHostedService<FederationSyncWorker>();
+
 // Authentication (custom lightweight JWT handler)
 builder.Services.AddAuthentication("Token")
     .AddScheme<TokenAuthOptions, TokenAuthHandler>("Token", o =>
@@ -75,6 +93,7 @@ builder.Services.AddAuthorization();
 builder.Services.AddControllers(o =>
     {
         o.Filters.Add<RequireAuthFilter>();
+        o.Filters.Add<RequireNodeFilter>();
     })
     .AddJsonOptions(o =>
     {
