@@ -1,13 +1,20 @@
 <script>
-import { ensureLogin } from './utils/request'
+import { ensureLogin, getToken } from './utils/request'
+import { initChat, refreshUnread } from './utils/chat-store'
 
 export default {
-  onLaunch: function () {
-    // 启动时静默校验本地 token 是否仍有效
-    ensureLogin(true)
+  async onLaunch() {
+    // 启动时静默校验本地 token 是否仍有效, 有效则建立常驻聊天连接
+    await ensureLogin(true)
+    initChat()
   },
-  onShow: function () {},
-  onHide: function () {},
+  onShow() {
+    if (getToken()) {
+      initChat()
+      refreshUnread()
+    }
+  },
+  onHide() {},
 }
 </script>
 

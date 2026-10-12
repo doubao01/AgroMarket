@@ -52,6 +52,7 @@
 <script>
 import { supplyApi, demandApi, userApi } from '../../api/index'
 import { getUser, clearAuth, ensureLogin, getToken } from '../../utils/request'
+import { teardownChat } from '../../utils/chat-store'
 
 export default {
   data() { return { me: null, counts: { supplies: 0, demands: 0 }, authStatus: '' } },
@@ -80,7 +81,7 @@ export default {
     go(url) { uni.navigateTo({ url }) },
     logout() {
       uni.showModal({ title: '退出登录', content: '确定退出当前账号？', success: (r) => {
-        if (r.confirm) { clearAuth(); this.me = null; uni.showToast({ title: '已退出' }) }
+        if (r.confirm) { clearAuth(); teardownChat(); this.me = null; uni.showToast({ title: '已退出' }) }
       } })
     },
     maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(7) : '' },
