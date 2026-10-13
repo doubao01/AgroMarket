@@ -284,26 +284,33 @@ FROM fed_node";
 
     // ---------------- 汇聚 ----------------
 
-    public async Task<List<FedNodeStatRow>> AggregateByNodeAsync(DateTime from, DateTime to)
+    public async Task<List<FedNodeStatRow>> AggregateByNodeAsync(DateTime from, DateTime to,
+        IReadOnlyCollection<string>? sources = null)
     {
+        // sources=null 表示不过滤; sources 为空集合表示"限定为空"→ 无结果
+        if (sources is { Count: 0 }) return new();
+        var filter = sources is null ? "" : " AND source_node_code IN @sources";
         using var conn = _db.Create();
         return (await conn.QueryAsync<FedNodeStatRow>(
-            @"SELECT source_node_code AS SourceNodeCode, SUM(order_count) AS OrderCount, SUM(trade_amount) AS TradeAmount
-              FROM fed_daily_metric WHERE stat_date BETWEEN @from AND @to
-              GROUP BY source_node_code ORDER BY OrderCount DESC",
-            new { from, to })).ToList();
+            $@"SELECT source_node_code AS SourceNodeCode, SUM(order_count) AS OrderCount, SUM(trade_amount) AS TradeAmount
+               FROM fed_daily_metric WHERE stat_date BETWEEN @from AND @to{filter}
+               GROUP BY source_node_code ORDER BY OrderCount DESC",
+            new { from, to, sources })).ToList();
     }
 
-    public async Task<List<FedAggPointRow>> AggregateByDayAsync(DateTime from, DateTime to)
+    public async Task<List<FedAggPointRow>> AggregateByDayAsync(DateTime from, DateTime to,
+        IReadOnlyCollection<string>? sources = null)
     {
+        if (sources is { Count: 0 }) return new();
+        var filter = sources is null ? "" : " AND source_node_code IN @sources";
         using var conn = _db.Create();
         return (await conn.QueryAsync<FedAggPointRow>(
-            @"SELECT DATE_FORMAT(stat_date,'%Y-%m-%d') AS StatDate, SUM(order_count) AS OrderCount,
+            $@"SELECT DATE_FORMAT(stat_date,'%Y-%m-%d') AS StatDate, SUM(order_count) AS OrderCount,
                      SUM(trade_amount) AS TradeAmount, SUM(user_count) AS UserCount,
                      SUM(supply_count) AS SupplyCount, SUM(demand_count) AS DemandCount
-              FROM fed_daily_metric WHERE stat_date BETWEEN @from AND @to
-              GROUP BY stat_date ORDER BY stat_date",
-            new { from, to })).ToList();
+               FROM fed_daily_metric WHERE stat_date BETWEEN @from AND @to{filter}
+               GROUP BY stat_date ORDER BY stat_date",
+            new { from, to, sources })).ToList();
     }
 
     // ---------------- 拉取游标 ----------------

@@ -151,6 +151,7 @@ public class FedAggregatePointDto
 public class FedAggregateDto
 {
     public string Range { get; set; } = "";
+    public string? RegionPrefix { get; set; }
     public int NodeCount { get; set; }
     public long TotalOrders { get; set; }
     public decimal TotalTradeAmount { get; set; }

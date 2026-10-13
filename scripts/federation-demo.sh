@@ -153,6 +153,21 @@ verify_node() { # $1=port $2=selfCode $3=peerCode $4=label
 verify_node "$PORT_A" "$CODE_A" "$CODE_B" "A"
 verify_node "$PORT_B" "$CODE_B" "$CODE_A" "B"
 
+# 区划前缀过滤: A=息县(411528), B=淮阳(411626)
+count_of() { # $1=port $2=regionPrefix
+  curl -fsS "http://127.0.0.1:$1/api/admin/federation/aggregate?range=30d&regionPrefix=$2" \
+    -H "Authorization: Bearer $(login_token "$1")" \
+    | sed -n 's/.*"nodeCount":\([0-9]*\).*/\1/p'
+}
+c_all=$(count_of "$PORT_A" "41")        # 全省: 本节点 + 对端
+c_own=$(count_of "$PORT_A" "411528")    # 仅息县(本节点)
+c_none=$(count_of "$PORT_A" "9999")     # 无匹配
+if [ "${c_all:-0}" = "2" ] && [ "${c_own:-0}" = "1" ] && [ "${c_none:-0}" = "0" ]; then
+  echo "[PASS] 区划前缀过滤: 41 -> ${c_all} 个来源, 411528 -> ${c_own} 个, 9999 -> ${c_none} 个"
+else
+  echo "[FAIL] 区划前缀过滤异常: 41 -> ${c_all}, 411528 -> ${c_own}, 9999 -> ${c_none}" >&2
+fi
+
 echo
 show_aggregate "$PORT_A" "A"
 show_aggregate "$PORT_B" "B"

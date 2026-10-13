@@ -1165,7 +1165,7 @@ try
     var (peerReg, peerB) = await Call(HttpMethod.Post, "/api/admin/federation/nodes", new
     {
         nodeCode = "node-itest-peer", nodeName = "集成测试对端", level = "COUNTY",
-        regionCode = (string?)null, baseUrl = baseUrl, nodeToken = (string?)null,
+        regionCode = "410100", baseUrl = baseUrl, nodeToken = (string?)null,
         direction = "BOTH", status = "ACTIVE",
     }, adminToken);
     var peerId = Data(peerB).TryGetProperty("id", out var pidv) ? pidv.GetInt64() : 0;
@@ -1189,6 +1189,16 @@ try
     var aggHasSelf = Data(aggB).TryGetProperty("byNode", out var aggByNode) && aggByNode.ValueKind == JsonValueKind.Array
         && aggByNode.EnumerateArray().Any(x => x.TryGetProperty("sourceNodeCode", out var sc) && sc.GetString() == "node-xixian");
     Check("跨节点汇聚默认纳入本节点(IncludeSelfInAggregate)", aggHasSelf, "byNode 缺少本节点 node-xixian");
+    // 区划前缀过滤: 本节点 411528(息县) 命中, 对端 410100(郑州) 不命中
+    var (aggOwnS, aggOwnB) = await Call(HttpMethod.Get, "/api/admin/federation/aggregate?range=7d&regionPrefix=411528", null, adminToken);
+    var ownNodes = Data(aggOwnB).TryGetProperty("byNode", out var obn) && obn.ValueKind == JsonValueKind.Array
+        ? obn.EnumerateArray().Select(x => x.GetProperty("sourceNodeCode").GetString()).ToList() : new List<string?>();
+    Check("汇聚按区划前缀过滤(命中本节点)", aggOwnS == HttpStatusCode.OK
+        && ownNodes.Contains("node-xixian") && !ownNodes.Contains("node-itest-peer"),
+        $"byNode=[{string.Join(",", ownNodes)}]");
+    var (aggNoneS, aggNoneB) = await Call(HttpMethod.Get, "/api/admin/federation/aggregate?range=7d&regionPrefix=999999", null, adminToken);
+    var noneCount = Data(aggNoneB).TryGetProperty("nodeCount", out var ncn) ? ncn.GetInt32() : -1;
+    Check("汇聚按区划前缀过滤(无匹配为空)", aggNoneS == HttpStatusCode.OK && noneCount == 0, $"nodeCount={noneCount}");
 
     // 13.8 脱敏校验: 落库明细标题已去手机号, 全部明细无原始手机号
     var (mrS, mrB) = await Call(HttpMethod.Get, "/api/admin/federation/records?source=node-xixian&type=SUPPLY&days=7&limit=200", null, adminToken);
