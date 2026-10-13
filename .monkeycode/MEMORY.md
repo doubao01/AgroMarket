@@ -148,3 +148,14 @@ This file records user instructions, preferences, and teachings for reference in
   - 防双计：若 `byNode` 已存在同编码（该节点也曾作为对端上报过自身数据），则**跳过**叠加。
   - `FederationSnapshotBuilder.BuildMetricsAsync` 增加 `(DateTime from, DateTime to)` 重载（闭区间、含无数据日），供 aggregate 复用；原 `BuildMetricsAsync(int days)` 改为委托它。`FederationAdminService` 因此新增 `FederationSnapshotBuilder` 依赖（DI 中已 Scoped 注册）。
   - 集成测试新增断言"跨节点汇聚默认纳入本节点(IncludeSelfInAggregate)"（第 13 段，现 144 断言）；`scripts/federation-demo.sh` 的验证改为断言"全景含本节点与对端两个来源"。
+
+[Project Knowledge Summary]
+- Date: 2026-10-12
+- Context: Discovered by Agent while adding the lightweight 省/市 view (region prefix filter) for aggregation
+- Category: Workflow & Collaboration / Environment Configuration
+- Instructions:
+  - 联动是**扁平网状**，`Level`/`RegionCode` 仅标签；`fed_node` 无父子归属，故省内"省看下辖市县合计"只能靠区划码前缀过滤（轻量方案，已实现）。
+  - `GET api/admin/federation/aggregate?regionPrefix=`：按"来源节点编码 → 区划码"映射过滤来源（省=前 2 位如 `41`，市=前 4 位如 `4101`）。映射 = 已登记对端 `fed_node.region_code` + 本节点 `Federation:RegionCode`；**带前缀时未登记/无区划的来源会被排除**；本节点自身也须匹配前缀才并入全景。`FedAggregateDto.RegionPrefix` 回带该值。
+  - 仓库层 `AggregateByNodeAsync/AggregateByDayAsync` 增加可选 `sources` 参数：`null`=不过滤，空集合=限定为空（返回空结果），非空=SQL `AND source_node_code IN @sources`。
+  - 开发配置 `Federation:RegionCode` 由 `""` 改为 `411528`（node-xixian=息县），便于区划过滤联调与测试；前端"跨节点汇聚"Tab 增加"区划前缀"输入框（`federationApi.aggregate(range, regionPrefix)`）。
+  - 集成测试第 13 段新增两条区划过滤断言（测试对端 `node-itest-peer` 的 `regionCode` 由 null 改为 `410100`）：前缀命中本节点 `411528`、前缀 `999999` 返回空。注意：因"自身实例当对端"导致拉取数据来源码=本节点码，故"默认纳入本节点"断言并非强证明，强证明在 `federation-demo.sh`（两个真实节点 ON/OFF 对比）。

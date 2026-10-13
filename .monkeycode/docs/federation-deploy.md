@@ -172,6 +172,9 @@ TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login/password \
 curl -s http://localhost:8080/api/admin/federation/self      -H "Authorization: Bearer $TOKEN"
 curl -s http://localhost:8080/api/admin/federation/nodes     -H "Authorization: Bearer $TOKEN"
 curl -s "http://localhost:8080/api/admin/federation/aggregate?range=30d" -H "Authorization: Bearer $TOKEN"
+# 省/市视角: 按区划码前缀过滤来源（省=前2位，市=前4位）
+curl -s "http://localhost:8080/api/admin/federation/aggregate?range=30d&regionPrefix=41"   -H "Authorization: Bearer $TOKEN"
+curl -s "http://localhost:8080/api/admin/federation/aggregate?range=30d&regionPrefix=4101" -H "Authorization: Bearer $TOKEN"
 ```
 
 ### 5.4 新增一个节点

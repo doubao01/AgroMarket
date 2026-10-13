@@ -121,6 +121,10 @@
         <picker :range="ranges" :value="rangeIndex" @change="onRange"><text class="flex1">统计区间：{{ ranges[rangeIndex] }}</text></picker>
         <text class="mini" @tap="loadAggregate">刷新</text>
       </view>
+      <view class="card">
+        <view class="field"><text class="field-label">区划前缀</text><input v-model="regionPrefix" class="input" placeholder="如 41(省) / 4101(市)，空=全部" @confirm="loadAggregate" /></view>
+        <view class="muted">按来源节点区划码前缀过滤（省=前2位，市=前4位）；仅对已登记对端与本节点生效。</view>
+      </view>
       <view class="stat-grid" style="padding:0;">
         <view class="stat"><text class="stat-num">{{ agg.nodeCount }}</text><text class="muted">参与节点</text></view>
         <view class="stat"><text class="stat-num">{{ agg.totalOrders }}</text><text class="muted">成交订单</text></view>
@@ -164,7 +168,7 @@ export default {
       tokenForm: { nodeCode: '', days: '365' }, issuedToken: '',
       reports: [], reportPage: 1,
       records: [], recordTypeLabels: ['全部类型', 'ORDER', 'SUPPLY', 'DEMAND'], typeIndex: 0,
-      ranges: ['7d', '30d', '90d'], rangeIndex: 1,
+      ranges: ['7d', '30d', '90d'], rangeIndex: 1, regionPrefix: '',
       agg: { nodeCount: 0, totalOrders: 0, totalTradeAmount: 0, byNode: [], points: [] },
     }
   },
@@ -306,7 +310,7 @@ export default {
     onRange(e) { this.rangeIndex = Number(e.detail.value); this.loadAggregate() },
     async loadAggregate() {
       try {
-        const r = await federationApi.aggregate(this.ranges[this.rangeIndex])
+        const r = await federationApi.aggregate(this.ranges[this.rangeIndex], this.regionPrefix.trim())
         this.agg = r || { nodeCount: 0, totalOrders: 0, totalTradeAmount: 0, byNode: [], points: [] }
       } catch (e) {}
     },

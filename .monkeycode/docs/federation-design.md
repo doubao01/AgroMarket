@@ -193,5 +193,6 @@ A 管理员/定时         A.FederationService        B(/export)              A 
 ## 10. 扩展点
 
 - 新增指标/明细类型：`FedRecordTypes` 增加常量 + 快照构建内补充查询 + 接收端白名单校验。
-- 下游汇总视图（省看下辖县合计）建议放在**展示层**按 `source_node_code` 聚合，不改数据流。
+- **省/市视角（轻量）**：`GET /aggregate` 支持 `regionPrefix` 区划码前缀过滤（省=前 2 位，市=前 4 位）。来源节点编码→区划码映射 = 已登记对端 `fed_node.region_code` + 本节点 `Federation:RegionCode`；带前缀时**未登记/无区划的来源会被排除**。本节点自身也需匹配前缀才会并入全景。
+- 未做**父子归属与逐级 rollup**（保持扁平，省不替县归并）；如需严格树形汇总，仍是展示层基于 `source_node_code` 的后续选项。
 - 实时联动：可将 `FederationSyncWorker` 的轮询替换为事件驱动（业务写入后入队触发 push）。

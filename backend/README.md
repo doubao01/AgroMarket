@@ -183,7 +183,7 @@ AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡
 - **数据内容**：`FederationSnapshotBuilder` 生成本节点"按天汇总指标 + 脱敏业务明细"。指标口径复用 `DashboardService.RealOrderWhere`（真实成交）；明细仅结构化业务字段，自由文本经 `PiiMasker`（去手机号/身份证/邮箱），订单买卖双方为不可逆假名 `ref_xxx`。
 - **同步**：`FederationService` 负责推送/拉取/导出/接收；`FederationSyncWorker` 按 `Federation:SyncIntervalMinutes` 定时执行（`AutoSync` 控制）。对端未配置 `node_token` 时自动使用本节点令牌。全部写入幂等：指标 `来源+日期`、明细 `来源+类型+外部ID`、批次 `来源+批次号`。
 - **接收校验**：节点上报的 `payload.nodeCode` 必须与令牌身份一致，否则 403。
-- **全景汇聚**：`GET api/admin/federation/aggregate` 默认把本节点自身指标一并纳入（来源=本节点编码），得到"本节点 + 对端"全景；`Federation:IncludeSelfInAggregate=false` 时仅汇总已接收的对端数据。
+- **全景汇聚**：`GET api/admin/federation/aggregate` 默认把本节点自身指标一并纳入（来源=本节点编码），得到"本节点 + 对端"全景；`Federation:IncludeSelfInAggregate=false` 时仅汇总已接收的对端数据。另支持 `?regionPrefix=` 按来源节点区划码前缀过滤（省=前 2 位，市=前 4 位），映射来自 `fed_node.region_code` 与本节点 `RegionCode`。
 - **部署**：每个节点部署一套独立 `{ MySQL + API }`（迁移 SQL 内写死 `USE agro_market`，同一 MySQL 实例不能承载两个节点）。多级集群编排见根目录 `docker-compose.cluster.yml`，引导脚本 `scripts/federation-bootstrap.sh`，完整手册见 `.monkeycode/docs/federation-deploy.md`。
 
 ## 文件上传（断点续传）

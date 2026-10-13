@@ -173,6 +173,7 @@ dotnet run --project AgroMarket.Tests
 - **接口**：节点间 `api/federation/node/{ping,reports,export}`；管理端 `api/admin/federation/{self,nodes,nodes/token,reports,metrics,records,aggregate,sync/push,sync/pull}`（仅管理员）。
 - **配置**：`Federation:Enabled` 开启后必须配置 `NodeCode`/`NodeName`/`SharedKey`（≥32 字节）；未配置时节点接口不可用，不影响其它业务。
 - **界面**：管理后台"联动"页对端节点按省 / 市 / 县分组展示；`aggregate` 默认纳入本节点，形成"本节点 + 对端"全景汇聚（可用 `Federation:IncludeSelfInAggregate=false` 关闭，仅汇总已接收的对端数据）。
+- **省/市视角**：`aggregate?regionPrefix=` 可按区划码前缀过滤来源节点（省=前 2 位如 `41`，市=前 4 位如 `4101`），映射来自已登记对端的 `region_code` 与本节点 `RegionCode`；不改数据模型（扁平拓扑，无父子 rollup）。
 - **部署**：多级（省/市/县）节点集群见 `docker-compose.cluster.yml`，每节点一套独立 MySQL + API，`federation-bootstrap` 一次性完成"互相登记对端 + 首轮同步"。本机两实例快速演示：`sh scripts/federation-demo.sh`。
 - 设计文档：`当前工作区/.monkeycode/docs/federation-design.md`；部署手册：`当前工作区/.monkeycode/docs/federation-deploy.md`。
 

@@ -81,8 +81,9 @@ public class FederationAdminController : ControllerBase
         => Ok(ApiResponse<List<FedRecordViewDto>>.Ok(await _admin.ListRecordsAsync(source, type, days, limit, offset)));
 
     [HttpGet("aggregate")]
-    public async Task<ActionResult<ApiResponse<FedAggregateDto>>> Aggregate([FromQuery] string? range)
-        => Ok(ApiResponse<FedAggregateDto>.Ok(await _admin.AggregateAsync(range)));
+    public async Task<ActionResult<ApiResponse<FedAggregateDto>>> Aggregate(
+        [FromQuery] string? range, [FromQuery] string? regionPrefix = null)
+        => Ok(ApiResponse<FedAggregateDto>.Ok(await _admin.AggregateAsync(range, regionPrefix)));
 
     /// <summary>手动推送到对端 (node 为空则推送到全部 PUSH/BOTH 节点)。</summary>
     [HttpPost("sync/push")]
