@@ -1410,6 +1410,147 @@ else
     }
 }
 
+// 15. 消息推送与报警 (报警中心)
+try
+{
+    if (adminToken.Length == 0 || buyerToken.Length == 0)
+    {
+        Check("报警中心前置登录", false, "缺少登录令牌");
+    }
+    else
+    {
+        Console.WriteLine("\n== 15. 报警中心与消息推送 ==");
+        var (rs, rb) = await Call(HttpMethod.Get, "/api/admin/alerts/rules", null, adminToken);
+        var ruleArr = rs == HttpStatusCode.OK ? Data(rb) : default;
+        var ruleCount = ruleArr.ValueKind == JsonValueKind.Array ? ruleArr.GetArrayLength() : 0;
+        Check("管理员读取报警规则(6条内置)", rs == HttpStatusCode.OK && Code(rb) == 0 && ruleCount == 6, $"count={ruleCount}");
+
+        var (fs, fb) = await Call(HttpMethod.Get, "/api/admin/alerts/rules", null, buyerToken);
+        Check("普通用户读取报警规则返回 403", fs == HttpStatusCode.Forbidden && Code(fb) == 403, $"status={(int)fs}");
+
+        var (us, ub) = await Call(HttpMethod.Put, "/api/admin/alerts/rules/AUDIT_BACKLOG",
+            new { enabled = true, thresholdValue = 25, suppressHours = 24 }, adminToken);
+        Check("管理员修改规则阈值(200)", us == HttpStatusCode.OK && Code(ub) == 0, $"status={(int)us} msg={Msg(ub)}");
+        var (_, vb) = await Call(HttpMethod.Get, "/api/admin/alerts/rules", null, adminToken);
+        string? auditJson = null;
+        foreach (var r in Data(vb).EnumerateArray())
+            if (r.GetProperty("code").GetString() == "AUDIT_BACKLOG")
+                auditJson = r.GetProperty("thresholdJson").GetString();
+        Check("阈值修改生效(count=25)", auditJson == "{\"count\":25}", auditJson);
+
+        var (is2, ib2) = await Call(HttpMethod.Put, "/api/admin/alerts/rules/AUDIT_BACKLOG",
+            new { thresholdValue = 99999 }, adminToken);
+        Check("非法阈值被拒绝(400)", is2 == HttpStatusCode.BadRequest && Code(ib2) == 400, $"status={(int)is2} code={Code(ib2)}");
+        var (_, vb2) = await Call(HttpMethod.Get, "/api/admin/alerts/rules", null, adminToken);
+        string? auditJson2 = null;
+        foreach (var r in Data(vb2).EnumerateArray())
+            if (r.GetProperty("code").GetString() == "AUDIT_BACKLOG")
+                auditJson2 = r.GetProperty("thresholdJson").GetString();
+        Check("非法阈值请求保留原值", auditJson2 == "{\"count\":25}", auditJson2);
+
+        var (ns, nb) = await Call(HttpMethod.Put, "/api/admin/alerts/rules/NOT_EXIST", new { enabled = true }, adminToken);
+        Check("未知规则代码返回 404", ns == HttpStatusCode.NotFound, $"status={(int)ns}");
+
+        var (ss1, sb1) = await Call(HttpMethod.Post, "/api/admin/alerts/scan", null, adminToken);
+        int executed1 = ss1 == HttpStatusCode.OK && Data(sb1).TryGetProperty("executed", out var e1) ? e1.GetInt32() : -1;
+        int hit1 = Data(sb1).ValueKind == JsonValueKind.Object && Data(sb1).TryGetProperty("hit", out var h1) ? h1.GetInt32() : -1;
+        int sup1 = Data(sb1).ValueKind == JsonValueKind.Object && Data(sb1).TryGetProperty("suppressed", out var s1) ? s1.GetInt32() : -1;
+        Check("手动扫描执行 6 条规则", ss1 == HttpStatusCode.OK && Code(sb1) == 0 && executed1 == 6, $"executed={executed1} errors");
+
+        var (ss2, sb2) = await Call(HttpMethod.Post, "/api/admin/alerts/scan", null, adminToken);
+        int sup2 = Data(sb2).ValueKind == JsonValueKind.Object && Data(sb2).TryGetProperty("suppressed", out var s2) ? s2.GetInt32() : -1;
+        Check("抑制窗口内重复扫描仅累计 hit_count", ss2 == HttpStatusCode.OK && sup1 >= 0 && sup2 >= 0 && hit1 + sup1 > 0,
+            $"first(hit={hit1},sup={sup1}) second(sup={sup2})");
+
+        var (ps, pb) = await Call(HttpMethod.Get, "/api/admin/alerts/records?page=1&pageSize=5", null, adminToken);
+        var recCount = ps == HttpStatusCode.OK && Data(pb).ValueKind == JsonValueKind.Object && Data(pb).TryGetProperty("items", out var recs) ? recs.GetArrayLength() : -1;
+        Check("报警记录分页可查询", ps == HttpStatusCode.OK && Code(pb) == 0 && recCount > 0, $"count={recCount}");
+
+        var (ss3, sb3) = await Call(HttpMethod.Post, "/api/admin/alerts/scan", null, buyerToken);
+        Check("普通用户触发扫描返回 403", ss3 == HttpStatusCode.Forbidden, $"status={(int)ss3}");
+
+        var (ws, wb) = await Call(HttpMethod.Post, "/api/wechat/subscribe-report",
+            new { templateKey = "ORDER", accepted = true }, buyerToken);
+        Check("订阅上报接口可用(WeChat 未配置降级不报错)", ws == HttpStatusCode.OK && Code(wb) == 0, $"status={(int)ws} msg={Msg(wb)}");
+
+        var (ws2, _) = await Call(HttpMethod.Post, "/api/wechat/subscribe-report",
+            new { templateKey = "ORDER", accepted = true });
+        Check("未登录订阅上报返回 401", ws2 == HttpStatusCode.Unauthorized, $"status={(int)ws2}");
+    }
+}
+catch (Exception ex) { Check("报警中心流程", false, ex.Message); }
+
+// 16. 社区与焦点图
+try
+{
+    Console.WriteLine("\n== 16. 社区与焦点图 ==");
+    long postId = 0;
+    if (sellerToken.Length > 0 && buyerToken.Length > 0)
+    {
+        var (cs, cb) = await Call(HttpMethod.Post, "/api/community/posts",
+            new { topic = "MARKET", title = "花生行情交流", content = "最近白沙花生产地价格如何？欢迎交流" }, sellerToken);
+        postId = cs == HttpStatusCode.OK && Data(cb).ValueKind == JsonValueKind.Number ? Data(cb).GetInt64() : 0;
+        Check("发帖成功", cs == HttpStatusCode.OK && Code(cb) == 0 && postId > 0, $"postId={postId}");
+
+        var (is1, ib1) = await Call(HttpMethod.Post, "/api/community/posts",
+            new { topic = "MARKET", title = "x", content = "太短的内容" }, sellerToken);
+        Check("发帖校验: 标题过短被拒绝(400)", is1 == HttpStatusCode.BadRequest, $"status={(int)is1}");
+
+        var (ccs, ccb) = await Call(HttpMethod.Post, $"/api/community/posts/{postId}/comments",
+            new { content = "我这边报3块2" }, buyerToken);
+        long commentId = ccs == HttpStatusCode.OK && Data(ccb).ValueKind == JsonValueKind.Number ? Data(ccb).GetInt64() : 0;
+        Check("评论成功", ccs == HttpStatusCode.OK && Code(ccb) == 0 && commentId > 0, $"commentId={commentId}");
+
+        var (rcs, rcb) = await Call(HttpMethod.Post, $"/api/community/posts/{postId}/comments",
+            new { content = "收到，谢谢", parentId = commentId }, sellerToken);
+        Check("楼中楼回复成功", rcs == HttpStatusCode.OK && Code(rcb) == 0);
+
+        var (ls, lb) = await Call(HttpMethod.Post, $"/api/community/posts/{postId}/like", null, buyerToken);
+        Check("点赞成功(liked=true)", ls == HttpStatusCode.OK && Data(lb).ValueKind == JsonValueKind.Object && Data(lb).GetProperty("liked").GetBoolean());
+        var (ls2, lb2) = await Call(HttpMethod.Post, $"/api/community/posts/{postId}/like", null, buyerToken);
+        Check("取消点赞(liked=false)", ls2 == HttpStatusCode.OK && Data(lb2).GetProperty("liked").GetBoolean() == false);
+
+        var (gs, gb) = await Call(HttpMethod.Get, $"/api/community/posts/{postId}");
+        var pd = Data(gs == HttpStatusCode.OK ? gb : default);
+        int commentCount = pd.ValueKind == JsonValueKind.Object && pd.TryGetProperty("post", out var pj) && pj.TryGetProperty("commentCount", out var cc) ? cc.GetInt32() : -1;
+        int commentsLen = pd.ValueKind == JsonValueKind.Object && pd.TryGetProperty("comments", out var cl) ? cl.GetArrayLength() : -1;
+        Check("帖子详情含评论(计数=2)", gs == HttpStatusCode.OK && Code(gb) == 0 && commentCount == 2 && commentsLen == 2, $"count={commentCount} len={commentsLen}");
+
+        var (hs, hb) = await Call(HttpMethod.Get, "/api/community/posts?orderBy=hot&topic=MARKET");
+        Check("热点帖子列表可访问", hs == HttpStatusCode.OK && Code(hb) == 0 && Data(hb).ValueKind == JsonValueKind.Object && Data(hb).TryGetProperty("total", out _));
+
+        var (ds2, _) = await Call(HttpMethod.Get, "/api/community/posts");
+        Check("社区帖子匿名可读", ds2 == HttpStatusCode.OK);
+
+        var (us3, _) = await Call(HttpMethod.Post, "/api/community/posts",
+            new { topic = "CHAT", title = "未登录发帖", content = "应该被拒绝的内容" });
+        Check("未登录发帖返回 401", us3 == HttpStatusCode.Unauthorized, $"status={(int)us3}");
+    }
+    else Check("社区前置登录", false, "缺少登录令牌");
+
+    if (adminToken.Length > 0 && postId > 0)
+    {
+        var (bs, bb) = await Call(HttpMethod.Post, "/api/admin/community/banners",
+            new { title = "秋季花生收购季", imageUrl = "/uploads/test/banner.jpg", linkType = "PAGE", linkValue = "/pages/market/index?tab=supply", sortOrder = 1, enabled = true }, adminToken);
+        Check("管理员保存焦点图(200)", bs == HttpStatusCode.OK && Code(bb) == 0, $"status={(int)bs} msg={Msg(bb)}");
+
+        var (bls, blb) = await Call(HttpMethod.Get, "/api/banners");
+        var bannerCount = bls == HttpStatusCode.OK && Data(blb).ValueKind == JsonValueKind.Array ? Data(blb).GetArrayLength() : -1;
+        Check("公开焦点图列表含新配置", bls == HttpStatusCode.OK && bannerCount > 0, $"count={bannerCount}");
+
+        var (ps3, pb3) = await Call(HttpMethod.Post, $"/api/admin/community/posts/{postId}/status/OFF", null, adminToken);
+        Check("管理员隐藏帖子(200)", ps3 == HttpStatusCode.OK && Code(pb3) == 0);
+        var (hs2, _) = await Call(HttpMethod.Get, $"/api/community/posts/{postId}");
+        Check("隐藏后详情返回 404", hs2 == HttpStatusCode.NotFound, $"status={(int)hs2}");
+        await Call(HttpMethod.Post, $"/api/admin/community/posts/{postId}/status/ACTIVE", null, adminToken);
+
+        var (nbs, _) = await Call(HttpMethod.Post, "/api/admin/community/banners",
+            new { title = "x", imageUrl = "u" }, buyerToken);
+        Check("普通用户保存焦点图返回 403", nbs == HttpStatusCode.Forbidden, $"status={(int)nbs}");
+    }
+}
+catch (Exception ex) { Check("社区与焦点图流程", false, ex.Message); }
+
 Console.WriteLine($"\n结果: {passed} 通过, {failed} 失败");
 return failed == 0 ? 0 : 1;
 // ---------- 内置 Mock OpenAI 兼容服务 ----------
