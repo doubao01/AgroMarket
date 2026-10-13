@@ -146,7 +146,7 @@ export const federationApi = {
   reports: (query) => http.get('/api/admin/federation/reports', query || {}, { auth: true }),
   metrics: (query) => http.get('/api/admin/federation/metrics', query || {}, { auth: true }),
   records: (query) => http.get('/api/admin/federation/records', query || {}, { auth: true }),
-  aggregate: (range) => http.get('/api/admin/federation/aggregate', { range }, { auth: true }),
+  aggregate: (range, regionPrefix) => http.get('/api/admin/federation/aggregate', { range, regionPrefix: regionPrefix || undefined }, { auth: true }),
   syncPush: (node) => http.post('/api/admin/federation/sync/push' + (node ? '?node=' + encodeURIComponent(node) : ''), {}, { auth: true }),
   syncPull: (node) => http.post('/api/admin/federation/sync/pull' + (node ? '?node=' + encodeURIComponent(node) : ''), {}, { auth: true }),
 }

@@ -130,16 +130,33 @@ public class FederationAdminService
         return rows.Select(ToView).ToList();
     }
 
-    public async Task<FedAggregateDto> AggregateAsync(string? range)
+    public async Task<FedAggregateDto> AggregateAsync(string? range, string? regionPrefix = null)
     {
         var (from, to) = ParseRange(range);
-        var byNode = await _repo.AggregateByNodeAsync(from, to);
-        var byDay = await _repo.AggregateByDayAsync(from, to);
+        regionPrefix = string.IsNullOrWhiteSpace(regionPrefix) ? null : regionPrefix.Trim();
+
+        // 区划前缀过滤: 按"来源节点编码 → 区划码"映射, 仅保留区划码以该前缀开头的来源。
+        // 映射来源 = 已登记对端(fed_node) + 本节点自身; 未登记/未知区划的来源在带前缀时被排除。
+        List<string>? allowed = null;
+        if (regionPrefix != null)
+        {
+            var regionOf = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            foreach (var n in await _repo.ListNodesAsync()) regionOf[n.NodeCode] = n.RegionCode;
+            if (!string.IsNullOrWhiteSpace(_opt.NodeCode)) regionOf[_opt.NodeCode] = _opt.RegionCode;
+            allowed = regionOf
+                .Where(kv => kv.Value != null && kv.Value.StartsWith(regionPrefix, StringComparison.Ordinal))
+                .Select(kv => kv.Key).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        var byNode = await _repo.AggregateByNodeAsync(from, to, allowed);
+        var byDay = await _repo.AggregateByDayAsync(from, to, allowed);
 
         // 全景开关: 把本节点自身指标并入汇聚结果 (来源节点=本节点编码)。
-        // 若已存在同编码的接收数据 (例如自身也曾作为对端上报过), 则不重复叠加。
+        // 若已存在同编码的接收数据 (例如自身也曾作为对端上报过), 则不重复叠加; 带区划前缀时本节点也须匹配。
         var selfCode = _opt.NodeCode;
-        if (_opt.IncludeSelfInAggregate && !string.IsNullOrWhiteSpace(selfCode)
+        var selfMatches = regionPrefix == null
+            || (!string.IsNullOrWhiteSpace(_opt.RegionCode) && _opt.RegionCode.StartsWith(regionPrefix, StringComparison.Ordinal));
+        if (_opt.IncludeSelfInAggregate && selfMatches && !string.IsNullOrWhiteSpace(selfCode)
             && !byNode.Any(n => n.SourceNodeCode == selfCode))
         {
             var local = await _snapshot.BuildMetricsAsync(from, to);
@@ -172,6 +189,7 @@ public class FederationAdminService
         return new FedAggregateDto
         {
             Range = range ?? "30d",
+            RegionPrefix = regionPrefix,
             NodeCount = byNode.Count,
             TotalOrders = byNode.Sum(x => x.OrderCount),
             TotalTradeAmount = byNode.Sum(x => x.TradeAmount),
