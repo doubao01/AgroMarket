@@ -44,6 +44,8 @@ export default {
     townId: { type: [Number, String], default: null },
     villageId: { type: [Number, String], default: null },
     allowAll: { type: Boolean, default: false },
+    // 选中乡镇后立即关闭弹层 (首页用法)；市场/发布页需乡镇→村两步选择，保持默认 false。
+    closeOnTownSelect: { type: Boolean, default: false },
   },
   data() {
     return {
@@ -80,6 +82,7 @@ export default {
       this.$emit('update:townId', t.id)
       this.$emit('update:villageId', null)
       this.$emit('town-change', { countyId: this.countyId, townId: t.id, townName: t.name })
+      if (this.closeOnTownSelect) { this.close(); return }
       await this.loadVillages(t.id)
     },
     pickAll() {

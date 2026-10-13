@@ -159,3 +159,36 @@ This file records user instructions, preferences, and teachings for reference in
   - 仓库层 `AggregateByNodeAsync/AggregateByDayAsync` 增加可选 `sources` 参数：`null`=不过滤，空集合=限定为空（返回空结果），非空=SQL `AND source_node_code IN @sources`。
   - 开发配置 `Federation:RegionCode` 由 `""` 改为 `411528`（node-xixian=息县），便于区划过滤联调与测试；前端"跨节点汇聚"Tab 增加"区划前缀"输入框（`federationApi.aggregate(range, regionPrefix)`）。
   - 集成测试第 13 段新增两条区划过滤断言（测试对端 `node-itest-peer` 的 `regionCode` 由 null 改为 `410100`）：前缀命中本节点 `411528`、前缀 `999999` 返回空。注意：因"自身实例当对端"导致拉取数据来源码=本节点码，故"默认纳入本节点"断言并非强证明，强证明在 `federation-demo.sh`（两个真实节点 ON/OFF 对比）。
+
+[Project Knowledge Summary]
+- Date: 2026-10-12
+- Context: Discovered by Agent while adding production-hardening features to federation (multi-hop forwarding, cross-replica lock, asymmetric keys, aggregator read-only, sync health, runtime settings) and ready-to-ship 省/市/县 deliverables
+- Category: Operations & Deployment / Environment Configuration / Troubleshooting & Debugging
+- Instructions:
+  - **P3 多跳转发（县→市→省）**：`FederationOptions.ForwardReceived`（默认 false，中间节点开）/ `AcceptForwarded`（默认 false，汇聚端开）。`FedMetricDto`/`FedRecordDto` 增 `SourceNodeCode`；`FederationService.IngestAsync` 改为**逐行按原始来源归组落库**（`NormalizeSource`：非本节点来源且对端未开 `AcceptForwarded` → 403），`PushAsync`/`ExportAsync` 在 `ForwardReceived` 时 `Concat` 转发行。因幂等键仍是 `来源+日期`/`来源+类型+外部ID`，直报+转发**不双计**。
+  - **P2 worker 单实例化**：`FederationRepository.TryAcquireSyncLockAsync`（MySQL `GET_LOCK(name,0)` 非阻塞）+ `FedSyncLock`（同连接 `RELEASE_LOCK`）。`FederationSyncWorker` 每轮同步前取锁，取不到跳过本轮 → 多副本下只有 leader 在跑。零新增依赖。
+  - **P2 非对称密钥**：`database/08_federation_keys.sql`（`fed_keypair` 单行 + `fed_node.public_key/key_fetched_at`）；`FederationKeyStore`（单例，RSA-2048 生成/加载/重置/对端公钥存取）；`FederationTokenService` 双模式（`SYMMETRIC` HS256 / `ASYMMETRIC` RS256），**校验端按令牌头 `alg` 自动选密钥**，未登记公钥的 RS256 令牌一律拒绝。公开接口 `GET api/federation/node/key`；管理端 `GET key` / `POST key/generate?force=` / `POST nodes/{id}/key/fetch`。`FedIssueTokenRequest.Mode`、`FedNodeDto.HasPublicKey`。生成密钥对须带 `?force=true`（防误覆盖）。
+  - **P1 AGGREGATOR 只读**：`FederationOptions.Role`（`FedRoles.BUSINESS` 默认 / `AGGREGATOR`）。`AggregatorReadOnlyMiddleware`（`Program.cs` 已挂载）在 AGGREGATOR 时对 `/api/*` 写方法返 403，放行 `auth`/`federation`/`admin/federation`。启动强校验 `Role`/`TokenMode` 合法性。
+  - **P1 同步健康**：`GET api/admin/federation/health` → `GetHealthAsync` + `FedHealthDto`/`FedPeerHealthDto`（`healthy/stale/lastError`）；阈值 `FederationOptions.EffectiveStaleMinutes`（`HealthStaleMinutes`>0 用它，否则 `max(2×SyncIntervalMinutes,60)`）。
+  - **运行时设置**：`database/09_federation_settings.sql`（`fed_setting`）；`FederationSettings` 单例（白名单 10 键：`AutoSync/SyncIntervalMinutes/BackfillDays/RecordWindowHours/IncludeSelfInAggregate/ForwardReceived/AcceptForwarded/HealthStaleMinutes/NodeName/RegionCode`；内存缓存 + 校验 + 覆盖优先，空串清除）。`FederationService`/`FederationAdminService`/`FederationSyncWorker` 改读生效值；`GET/PUT api/admin/federation/settings`（`{editable, items:[{key,value}]}`，非法键 400）。身份/密钥类（`Enabled/NodeCode/Level/TokenMode/SharedKey/Role`）**不在白名单**，需重启。
+  - **worker 错峰**：`FederationSyncWorker` 启动延迟改为 `Random.Shared.Next(10,41)` 秒、每轮叠加 0~20% 抖动，避免多节点同时批量推拉。
+  - **P0 部署默认**：`BackfillDays` 默认由 1 改为 **7**（`FederationOptions` + `appsettings*.json`，防节点中断 >1 天导致指标永久缺数）。compose/env 透传 `Federation__{TokenMode,Role,ForwardReceived,AcceptForwarded,BackfillDays,HealthStaleMinutes,SyncIntervalMinutes}`。
+  - **`deploy/` 三套交付物**：`deploy/province`（Role=AGGREGATOR, Accept=true, Forward=false）、`deploy/city`（BUSINESS, Accept=true, Forward=true，中间汇聚）、`deploy/county`（BUSINESS, Accept=false, Forward=false），各含 `docker-compose.yml` + `.env.example` + `README.md`；`deploy/README.md` 总览。compose 用相对路径 `../../backend`、`../../database`，须在 `deploy/<level>/` 内 `docker compose up`。
+  - **集群编排扩为 4 节点**：`docker-compose.cluster.yml` 增 `db-zhoukou`/`api-zhoukou`（市级，`node-zhoukou`/`411600`，开 `ForwardReceived`），省级 `node-henan` 设 `Role=AGGREGATOR` + `AcceptForwarded`，端口 `API_PORT_ZHOUKOU=8083`；`FED_ALL` 与 `volumes` 相应扩充。
+  - **迁移数**：`init-db.sh` 与容器 `docker-init.sh` 现覆盖 `01`–`09`（新增 08 密钥表、09 设置表），`fed_*` 期望 **7 张**（`fed_node`/`fed_report`/`fed_daily_metric`/`fed_business_record`/`fed_sync_cursor`/`fed_keypair`/`fed_setting`）。
+  - **集成测试**：现 **165 断言**（第 13 段含 13.9 多跳转发、13.10 非对称签发/验签/公钥分发、13.11 健康、13.12 运行时设置；第 14 段用独立实例 18090 + `Federation__Role=AGGREGATOR` 校验写拦截 403/读 200/联动写 200，需先构建 Api）。`FederationOptions` 读经 `IOptionsMonitor`/单例注入，`FederationSettings._cache` 在 Update 后失效。前端 `federation.vue` 本节点卡显示角色/令牌模式/开关，节点卡显示公钥状态 + "拉取公钥"，新增"设置"Tab（健康 + 运行设置表单 + 密钥管理）。
+
+[Project Knowledge Summary]
+- Date: 2026-10-13
+- Context: Discovered by Agent while auditing federation implementation vs design docs and closing remaining gaps
+- Category: Operations & Deployment / Troubleshooting & Debugging
+- Instructions:
+  - **迁移 SQL 兼容 MySQL 8 与 MariaDB**：原 `03_chat.sql`/`04_chat_wechat.sql`/`06_chat_cleanup.sql`/`08_federation_keys.sql` 使用 `ADD COLUMN IF NOT EXISTS`（仅 MariaDB 支持），而 compose 全部固定 `mysql:8.0`，全新库会在 `docker-init.sh`（`set -e`）中报语法错误中断。已改为 **information_schema 判定的动态 ALTER**（`SET @c := (SELECT COUNT(*) ...); SET @s := IF(@c=0,'ALTER ...','DO 0'); PREPARE _st FROM @s; EXECUTE _st; DEALLOCATE PREPARE _st;`），两引擎通用且幂等。注意 `01_schema.sql` **不含**这些后加列（`conversation_id`/`reply_to_message_id`/`remark`/`public_key` 等），勿误以为可跳过。本地 MariaDB 10.11 已用临时库跑通 01–09 并验证 7 张 `fed_*` 表 + 关键列 + `idx_tq_conv`，且重跑幂等（无 docker，未在真实 MySQL 8 上验证，但所用语法均为两引擎标准）。
+  - **拉取分页**：`FedExportDto` 增 `NextSince`；`ExportAsync` 明细按 `occurred_at` 升序（`BuildRecordsAsync(..., oldestFirst:true)`）；`PullAsync` 循环直到 `!HasMore || nextSince<=since || 页数>=100`，再推进游标到 `generatedAt`。`FedReport.batch_no` VARCHAR(64)，分页批次号已 `Truncate(...,64)`。
+  - **`FederationNodeController.Receive`**：发送方身份必须与令牌一致（不再容忍空 `payload.NodeCode`）；转发数据由逐行 `sourceNodeCode` 表达（`NormalizeSource`）。
+  - **`IssueSelf`** 采用运行时生效 `NodeName/RegionCode`；公开 `GET api/federation/node/key` 回带 `tokenMode`（`FedKeyDto.TokenMode`）；`appsettings*.json` 补 `TokenMode/Role/HealthStaleMinutes`；删除死代码（`GetNodeAsync`/`ExportRecordsSinceAsync`/`FederationOptions.EffectiveStaleMinutes`/`IsSyncActive`）。
+  - **`FEDERATION_SHARED_KEY`**：compose 由 `${...:?}` 改 `${...:-}`，使 `ASYMMETRIC` 模式可留空；根 `.env.example` 补 `FEDERATION_SYNC_INTERVAL_MINUTES`/`FEDERATION_INCLUDE_SELF_IN_AGGREGATE`（此前缺失）；`docker-compose.yml` 单节点补 `Federation__TokenMode/Role`。
+  - **`database/02_seed.sql`** 增周口市 `411600` / 淮阳县 `411626`（cluster 四方节点与 demo 用到，此前缺失）。
+  - **`init-db.sh`**：客户端自动选 `mariadb`→`mysql`；口令变量兼容 `DB_PASS`/`DB_PASSWORD`。
+  - **deploy README**：登录接口更正为 `POST /api/auth/login/password`；`sync/push?node=`（非 `nodeId`）；健康检查用公开 `/health`（`/api/federation/node/ping` 需节点令牌，会 401）。
+  - **位置切换（location-switcher）补齐**：`region-picker.vue` 新增 `closeOnTownSelect` prop（首页传 true，满足 R1 AC3「选中乡镇即关闭」；市场/发布页保持两步选村镇）；首页/市场页**持久化 `villageName`**（此前恒为 `''`，导致发布页预填 `regionLabel` 丢失村级）。

@@ -42,6 +42,13 @@ async Task<string> Login(string phone, string pwd)
     return Data(b).GetProperty("token").GetString()!;
 }
 
+string JwtHeader(string token)
+{
+    var seg = token.Split('.')[0].Replace('-', '+').Replace('_', '/');
+    seg = seg.PadRight(seg.Length + (4 - seg.Length % 4) % 4, '=');
+    return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(seg));
+}
+
 Console.WriteLine($"AgroMarket 集成测试 @ {baseUrl}\n");
 
 // 1. 健康检查
@@ -1219,13 +1226,188 @@ try
         $"title={maskedTitle}");
     Check("落库业务明细不含原始手机号", !anyRawPhone);
 
+    // 13.9 多跳转发: 来源可回填原始下级节点(AcceptForwarded), 且已接收数据可再向上层转发(ForwardReceived)
+    var fwdToday = DateTime.Today.ToString("yyyy-MM-dd");
+    var fwdPayload = new
+    {
+        nodeCode = "node-xixian",   // 载荷发送方 = 令牌身份 (中间节点)
+        batchNo = "itest-fwd-" + Guid.NewGuid().ToString("N")[..8],
+        periodDate = fwdToday,
+        generatedAt = DateTime.Now,
+        metrics = new[]
+        {
+            new { sourceNodeCode = "node-county-a", statDate = fwdToday, userCount = 1, activeUserCount = 1,
+                  newUserCount = 1, supplyCount = 3, demandCount = 2, orderCount = 5, tradeAmount = 50m,
+                  messageCount = 0, conversationCount = 0 },
+        },
+        records = new[]
+        {
+            new { sourceNodeCode = "node-county-a", type = "ORDER", externalId = "itest-fwd-order-1",
+                  regionCode = "411528", occurredAt = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"),
+                  data = new { amount = 50m, buyerRef = "ref_x", sellerRef = "ref_y" } },
+        },
+    };
+    var (fwdS, fwdB) = await Call(HttpMethod.Post, "/api/federation/node/reports", fwdPayload, nodeTok);
+    Check("接收转发数据(来源=原始下级节点)成功", fwdS == HttpStatusCode.OK && Code(fwdB) == 0, $"status={(int)fwdS}");
+    var (cfmS, cfmB) = await Call(HttpMethod.Get, $"api/admin/federation/metrics?source=node-county-a&from={fwdToday}&to={fwdToday}", null, adminToken);
+    var cfmOk = cfmS == HttpStatusCode.OK && Data(cfmB).ValueKind == JsonValueKind.Array
+        && Data(cfmB).GetArrayLength() == 1 && Data(cfmB)[0].GetProperty("orderCount").GetInt64() == 5;
+    Check("转发数据按原始来源节点归集", cfmOk, $"status={(int)cfmS}");
+
+    var (exS, exB) = await Call(HttpMethod.Get, "/api/federation/node/export?limit=200", null, nodeTok);
+    var exHasFwd = Data(exB).TryGetProperty("metrics", out var exM) && exM.ValueKind == JsonValueKind.Array
+        && exM.EnumerateArray().Any(x => x.TryGetProperty("sourceNodeCode", out var sc) && sc.GetString() == "node-county-a");
+    Check("中间节点导出含已接收的下级数据(ForwardReceived)", exS == HttpStatusCode.OK && exHasFwd, $"status={(int)exS}");
+
+    // 13.10 非对称令牌 (RS256): 生成密钥对 -> 公钥分发 -> 对端按 alg 自动验签
+    var (kgS, kgB) = await Call(HttpMethod.Post, "/api/admin/federation/key/generate?force=true", null, adminToken);
+    var ownPub = Data(kgB).TryGetProperty("publicKey", out var opk) ? opk.GetString() : null;
+    Check("生成节点非对称密钥对", kgS == HttpStatusCode.OK && ownPub != null && ownPub.Contains("PUBLIC KEY"),
+        $"status={(int)kgS}");
+
+    var (pkS, pkB) = await Call(HttpMethod.Get, "/api/federation/node/key");
+    var pubDist = pkS == HttpStatusCode.OK && Data(pkB).TryGetProperty("publicKey", out var pkv) && (pkv.GetString() ?? "").Contains("PUBLIC KEY");
+    Check("公开接口分发本节点公钥", pubDist, $"status={(int)pkS}");
+
+    var (rsaReg, rsaRegB) = await Call(HttpMethod.Post, "/api/admin/federation/nodes", new
+    {
+        nodeCode = "node-rsa-peer", nodeName = "非对称对端", level = "CITY",
+        regionCode = "411500", baseUrl = baseUrl, nodeToken = (string?)null,
+        direction = "BOTH", status = "ACTIVE",
+    }, adminToken);
+    var rsaId = Data(rsaRegB).TryGetProperty("id", out var ridv) ? ridv.GetInt64() : 0;
+    Check("注册非对称对端节点", rsaReg == HttpStatusCode.OK && rsaId > 0, $"id={rsaId}");
+
+    var (fkS, _) = await Call(HttpMethod.Post, $"/api/admin/federation/nodes/{rsaId}/key/fetch", null, adminToken);
+    Check("从对端拉取公钥成功", fkS == HttpStatusCode.OK, $"status={(int)fkS}");
+    var (ndS, ndB) = await Call(HttpMethod.Get, "/api/admin/federation/nodes", null, adminToken);
+    var hasPubKey = Data(ndB).ValueKind == JsonValueKind.Array && Data(ndB).EnumerateArray().Any(x =>
+        x.TryGetProperty("nodeCode", out var ncc) && ncc.GetString() == "node-rsa-peer"
+        && x.TryGetProperty("hasPublicKey", out var hpk) && hpk.GetBoolean());
+    Check("对端公钥已登记(HasPublicKey)", hasPubKey, "node-rsa-peer 缺少公钥");
+
+    var (rtS, rtB) = await Call(HttpMethod.Post, "/api/admin/federation/nodes/token",
+        new { nodeCode = "node-rsa-peer", mode = "ASYMMETRIC" }, adminToken);
+    var rsaTok = Data(rtB).TryGetProperty("token", out var rtk) ? rtk.GetString() : null;
+    var rsaAlg = string.IsNullOrEmpty(rsaTok) ? "" : (JwtHeader(rsaTok!).Contains("RS256") ? "RS256" : "other");
+    Check("签发 RS256 节点令牌", rtS == HttpStatusCode.OK && rsaAlg == "RS256", $"status={(int)rtS} alg={rsaAlg}");
+    var (rPing, rPingB) = await Call(HttpMethod.Get, "/api/federation/node/ping", null, rsaTok);
+    var rPeer = Data(rPingB).TryGetProperty("peer", out var rpc) ? rpc.GetString() : null;
+    Check("RS256 令牌经对端公钥验签通过", rPing == HttpStatusCode.OK && rPeer == "node-rsa-peer",
+        $"status={(int)rPing} peer={rPeer}");
+
+    var (nkS, nkB) = await Call(HttpMethod.Post, "/api/admin/federation/nodes/token",
+        new { nodeCode = "node-no-key", mode = "ASYMMETRIC" }, adminToken);
+    var nkTok = Data(nkB).TryGetProperty("token", out var ntk) ? ntk.GetString() : null;
+    var (nkPing, _) = await Call(HttpMethod.Get, "/api/federation/node/ping", null, nkTok);
+    Check("缺少公钥的 RS256 令牌被拒绝(401)", nkS == HttpStatusCode.OK && nkPing == HttpStatusCode.Unauthorized,
+        $"issue={(int)nkS} ping={(int)nkPing}");
+
+    // 13.11 同步健康总览
+    var (hlS, hlB) = await Call(HttpMethod.Get, "/api/admin/federation/health", null, adminToken);
+    var hlOk = hlS == HttpStatusCode.OK && Data(hlB).ValueKind == JsonValueKind.Object
+        && Data(hlB).TryGetProperty("peers", out var pl) && pl.ValueKind == JsonValueKind.Array
+        && Data(hlB).TryGetProperty("staleMinutes", out var sm) && sm.GetInt32() > 0;
+    Check("同步健康总览返回(peers/staleMinutes)", hlOk, $"status={(int)hlS}");
+
+    // 13.12 运行时设置 (可热改白名单 + 持久化覆盖)
+    string? SettingValue(JsonElement body, string key)
+    {
+        if (!Data(body).TryGetProperty("items", out var its) || its.ValueKind != JsonValueKind.Array) return null;
+        foreach (var it in its.EnumerateArray())
+            if (it.TryGetProperty("key", out var k) && k.GetString() == key
+                && it.TryGetProperty("value", out var v)) return v.GetString();
+        return null;
+    }
+    var (stS, stB) = await Call(HttpMethod.Get, "/api/admin/federation/settings", null, adminToken);
+    Check("读取运行时设置", stS == HttpStatusCode.OK && SettingValue(stB, "IncludeSelfInAggregate") != null, $"status={(int)stS}");
+    var (upS, upB) = await Call(HttpMethod.Put, "/api/admin/federation/settings",
+        new Dictionary<string, string?> { ["BackfillDays"] = "3" }, adminToken);
+    Check("更新运行时设置生效", upS == HttpStatusCode.OK && SettingValue(upB, "BackfillDays") == "3", $"status={(int)upS}");
+    var (badSetS, badSetB) = await Call(HttpMethod.Put, "/api/admin/federation/settings",
+        new Dictionary<string, string?> { ["NotAllowedKey"] = "1" }, adminToken);
+    Check("非法设置键被拒绝(400)", badSetS == HttpStatusCode.BadRequest || Code(badSetB) == 400, $"status={(int)badSetS}");
+    await Call(HttpMethod.Put, "/api/admin/federation/settings",
+        new Dictionary<string, string?> { ["BackfillDays"] = "" }, adminToken);
+
     // 清理: 移除测试对端节点
+    if (rsaId > 0) await Call(HttpMethod.Delete, $"/api/admin/federation/nodes/{rsaId}", null, adminToken);
     if (peerId > 0) await Call(HttpMethod.Delete, $"/api/admin/federation/nodes/{peerId}", null, adminToken);
     if (maskSupplyId > 0) await Call(HttpMethod.Post, $"/api/supplies/{maskSupplyId}/status/off_shelf", null, sellerToken);
 }
 catch (Exception ex)
 {
     Check("节点联动流程", false, ex.Message);
+}
+
+// ================= 14. 汇聚只读节点 (Role=AGGREGATOR) =================
+Console.WriteLine("\n== 14. 汇聚只读节点 ==");
+if (apiDll is null)
+{
+    Console.WriteLine("  SKIP  汇聚只读: 未找到 AgroMarket.Api.dll, 请先构建 Api 项目");
+}
+else
+{
+    Process? agg = null;
+    var aggHttp = new HttpClient { BaseAddress = new Uri("http://127.0.0.1:18090"), Timeout = TimeSpan.FromSeconds(30) };
+    try
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            Arguments = $"\"{apiDll}\"",
+            WorkingDirectory = Path.GetDirectoryName(apiDll)!,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
+        psi.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:18090";
+        psi.Environment["Federation__Role"] = "AGGREGATOR";
+        psi.Environment["Federation__AutoSync"] = "false";
+        agg = Process.Start(psi);
+
+        var aggUp = false;
+        for (var i = 0; i < 40; i++)
+        {
+            try { if ((await aggHttp.GetAsync("/health")).IsSuccessStatusCode) { aggUp = true; break; } }
+            catch { }
+            await Task.Delay(500);
+        }
+        Check("汇聚只读实例启动成功(18090)", aggUp);
+
+        if (aggUp)
+        {
+            var login = await aggHttp.PostAsync("/api/auth/login/password",
+                JsonContent.Create(new { phone = "13800000001", password = "Abc123456" }));
+            var lbody = JsonDocument.Parse(await login.Content.ReadAsStringAsync()).RootElement.Clone();
+            var aggTok = lbody.GetProperty("data").GetProperty("token").GetString()!;
+            var aggAuth = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", aggTok);
+
+            var writeReq = new HttpRequestMessage(HttpMethod.Post, "/api/supplies")
+            { Content = JsonContent.Create(new { title = "aggregator-should-block" }) };
+            writeReq.Headers.Authorization = aggAuth;
+            var blocked = await aggHttp.SendAsync(writeReq);
+            Check("汇聚只读节点拦截业务写(403)", blocked.StatusCode == HttpStatusCode.Forbidden, $"status={(int)blocked.StatusCode}");
+
+            var readReq = new HttpRequestMessage(HttpMethod.Get, "/api/supplies?pageSize=1");
+            readReq.Headers.Authorization = aggAuth;
+            var readOk = await aggHttp.SendAsync(readReq);
+            Check("汇聚只读节点放行业务读(200)", readOk.StatusCode == HttpStatusCode.OK, $"status={(int)readOk.StatusCode}");
+
+            var fedReq = new HttpRequestMessage(HttpMethod.Post, "/api/admin/federation/sync/push");
+            fedReq.Headers.Authorization = aggAuth;
+            var fedOk = await aggHttp.SendAsync(fedReq);
+            Check("汇聚只读节点放行联动管理写(200)", fedOk.StatusCode == HttpStatusCode.OK, $"status={(int)fedOk.StatusCode}");
+        }
+    }
+    catch (Exception ex) { Check("汇聚只读流程", false, ex.Message); }
+    finally
+    {
+        try { if (agg is { HasExited: false }) agg.Kill(true); } catch { }
+        agg?.Dispose();
+        aggHttp.Dispose();
+    }
 }
 
 Console.WriteLine($"\n结果: {passed} 通过, {failed} 失败");

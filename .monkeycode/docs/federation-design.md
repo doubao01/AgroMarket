@@ -1,8 +1,9 @@
 # 多节点联动（数据上报 / 同步）设计
 
-> 范围：AgroMarket（农贸通）在"多县域 + 省级"场景下的**扁平多节点**业务数据上报与同步能力，
-> 以及管理后台联动界面。代码位置：`backend/AgroMarket.Api/Federation/`、`frontend/src/pages/admin/federation.vue`、
-> `database/07_federation.sql`。
+> 范围：AgroMarket（农贸通）在"多县域 + 省级"场景下的**扁平多节点**业务数据上报与同步能力、
+> 可选的**多跳汇聚（县→市→省）**、汇聚只读节点，以及管理后台联动界面。
+> 代码位置：`backend/AgroMarket.Api/Federation/`、`frontend/src/pages/admin/federation.vue`、
+> `database/{07_federation,08_federation_keys,09_federation_settings}.sql`。
 
 ## 1. 目标与非目标
 
@@ -51,8 +52,12 @@
   接口鉴权：`[RequireNode]` + `RequireNodeFilter`，从 `Authorization: Bearer` 或 `X-Node-Token` 取令牌。
 - **令牌语义 = "我是谁"**：节点调用对端时，默认携带**本节点自己**的令牌（`IssueSelf()`，`FederationTokenService.cs:63`）。
   对端表里的 `node_token` 可留空；仅当某对端要求"我签发给你"的专属令牌时才填写。
+- **双模式（可选）**：`Federation:TokenMode` 取 `SYMMETRIC`（默认，HS256 共享密钥）或 `ASYMMETRIC`（RS256 每节点密钥对）。
+  非对称模式下各节点独立私钥（`FederationKeyStore` 单例，持久化 `fed_keypair`），对端仅存公钥（`fed_node.public_key`），
+  单点泄露不再可伪造全网令牌。校验端按令牌头 `alg` **自动选密钥**：HS256 用共享密钥，RS256 用对端公钥，
+  未登记公钥的 RS256 令牌一律拒绝。公钥经公开接口 `GET /api/federation/node/key` 分发，管理端可 `key/generate` 与 `nodes/{id}/key/fetch`。
 
-## 4. 数据模型（`database/07_federation.sql`）
+## 4. 数据模型（`database/07_federation.sql` + `08` + `09`）
 
 | 表 | 作用 | 幂等键 |
 |----|------|--------|
@@ -61,9 +66,12 @@
 | `fed_daily_metric` | 收到的**按天汇总指标**读模型 | `(source_node_code, stat_date)` |
 | `fed_business_record` | 收到的**脱敏业务明细** | `(source_node_code, record_type, external_id)` |
 | `fed_sync_cursor` | 主动拉取的增量游标 | `(peer_node_code, cursor_type)` |
+| `fed_keypair` | 本节点 RSA 密钥对（`08`，单行） | 单行 |
+| `fed_setting` | 运行时设置覆盖（`09`，白名单键值） | `setting_key` |
 
 > 收到的数据 `source_node_code` 一律为**来源节点的真实 nodeCode**（拉取时取导出响应的 `nodeCode`，
-> 而非本地登记别名），保证数据归属不受本地别名影响。
+> 而非本地登记别名），保证数据归属不受本地别名影响。多跳转发场景下，接收端按载荷中的**原始来源**
+> `sourceNodeCode` 归组落库（见 §11）。
 
 ## 5. 指标口径与脱敏
 
@@ -79,13 +87,14 @@
 
 ## 6. 协议与接口契约
 
-### 6.1 节点间接口（`/api/federation/node/*`，需节点令牌）
+### 6.1 节点间接口（`/api/federation/node/*`；除公开的 `/key` 外均需节点令牌）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/ping` | 连通性与身份探测，返回 `{peer, peerName, level}` |
 | POST | `/reports` | 接收对端上报 |
 | GET | `/export?since=<时间>&limit=<n>` | 增量导出本节点数据（供对端拉取） |
+| GET | `/key` | 公开本节点公钥（非对称模式，`{nodeCode, tokenMode, publicKey}`） |
 
 **上报载荷 `FedReportPayload`**
 ```json
@@ -108,10 +117,11 @@
 }
 ```
 
-**导出响应 `FedExportDto`**：`{ nodeCode, generatedAt, hasMore, metrics[], records[] }`
-（拉取方以 `generatedAt` 作为下一次 `since` 游标。）
+**导出响应 `FedExportDto`**：`{ nodeCode, generatedAt, hasMore, nextSince, metrics[], records[] }`
+（明细按 `occurredAt` 升序返回；`hasMore=true` 时拉取方以 `nextSince` 作为下一页 `since` 继续拉取，取完后游标推进到 `generatedAt`，避免单批超限导致明细被静默丢弃。）
 
-**接收校验**：`payload.nodeCode` 必须等于令牌身份 `node_code`，否则 `403`。
+**接收校验**：默认 `payload.nodeCode` 必须等于令牌身份 `node_code`，否则 `403`；
+开启 `Federation:AcceptForwarded` 的汇聚端则允许载荷携带 `sourceNodeCode`（原始来源）的转发数据。
 （控制器 `Api/FederationNodeController.cs`。）
 
 ### 6.2 管理端接口（`/api/admin/federation/*`，仅管理员）
@@ -128,7 +138,13 @@
 | GET | `/reports?source=&page=&size=` | 上报批次审计 |
 | GET | `/metrics?source=&range=7d\|30d\|90d`（或 `from`/`to`） | 收到的汇总指标 |
 | GET | `/records?source=&type=&days=&limit=&offset=` | 收到的业务明细 |
-| GET | `/aggregate?range=` | 跨节点汇聚（总量 + 按节点 + 按日） |
+| GET | `/aggregate?range=` | 跨节点汇聚（总量 + 按节点 + 按日），支持 `regionPrefix=` |
+| GET | `/health` | 同步健康总览（各对端 `healthy/stale/lastError`） |
+| GET | `/settings` | 运行时设置（`{editable, items:[{key,value}]}`） |
+| PUT | `/settings` | 更新运行时设置（白名单键，空串=清除覆盖） |
+| GET | `/key` | 本节点公钥与令牌模式 |
+| POST | `/key/generate?force=` | 生成/重置本节点 RSA 密钥对（`force=true` 才覆盖已有） |
+| POST | `/nodes/{id}/key/fetch` | 从对端拉取其公钥（非对称模式） |
 | POST | `/sync/push?node=` | 手动推送（`node` 为空=全部 PUSH/BOTH） |
 | POST | `/sync/pull?node=` | 手动拉取（`node` 为空=全部 PULL/BOTH） |
 
@@ -163,8 +179,9 @@ A 管理员/定时         A.FederationService        B(/export)              A 
 ```
 
 ### 7.3 定时（`FederationSyncWorker`）
-每 `Federation:SyncIntervalMinutes` 分钟执行一次 `PushAsync(null)` + `PullAsync(null)`；
-仅当 `Enabled && AutoSync && HasIdentity` 时运行，启动后延迟 20s 首跑，异常只记日志。
+每（生效的）`SyncIntervalMinutes` 分钟执行一次 `PushAsync(null)` + `PullAsync(null)`；
+仅当 `Enabled && AutoSync && HasIdentity` 时运行，启动后**错峰延迟 10~40s** 首跑，每轮再叠加 **0~20% 周期抖动**，避免多节点同时批量推拉。异常只记日志。
+跨副本互斥：每轮开始前用 `FederationRepository.TryAcquireSyncLockAsync`（MySQL `GET_LOCK(name,0)` 非阻塞）取锁，取不到则跳过本轮，确保多副本下同一时刻只有一个 worker 在同步。
 
 ## 8. 幂等与一致性
 
@@ -172,7 +189,7 @@ A 管理员/定时         A.FederationService        B(/export)              A 
 - **明细**：键 `来源+类型+外部ID`（`externalId` 由来源节点生成，含节点前缀）→ 重叠不重复。
 - **批次**：键 `来源+批次号` → 审计不重复。
 - 因此：A↔B 互推、或多条路径重复投递，结果一致；允许任意两节点直连而无需环路检测。
-- 拉取游标以对端 `generatedAt` 推进，做到**增量**；拉取失败不改游标（下次重试）。
+- 拉取按 `hasMore/nextSince` **分页增量**：逐页拉取直至取完，游标推进到对端 `generatedAt`；拉取失败不改游标（下次重试）。
 
 ## 9. 管理界面设计
 
@@ -196,3 +213,21 @@ A 管理员/定时         A.FederationService        B(/export)              A 
 - **省/市视角（轻量）**：`GET /aggregate` 支持 `regionPrefix` 区划码前缀过滤（省=前 2 位，市=前 4 位）。来源节点编码→区划码映射 = 已登记对端 `fed_node.region_code` + 本节点 `Federation:RegionCode`；带前缀时**未登记/无区划的来源会被排除**。本节点自身也需匹配前缀才会并入全景。
 - 未做**父子归属与逐级 rollup**（保持扁平，省不替县归并）；如需严格树形汇总，仍是展示层基于 `source_node_code` 的后续选项。
 - 实时联动：可将 `FederationSyncWorker` 的轮询替换为事件驱动（业务写入后入队触发 push）。
+
+## 11. 进阶能力（汇聚上收 / 只读节点 / 健康 / 运行时设置）
+
+- **多跳转发（县→市→省）**：中间节点开 `Federation:ForwardReceived`，推送（push）与导出（pull 的 `export`）时把**已接收的下级数据**一并以
+  `sourceNodeCode=原始来源` 附带（`BuildForward*`）；汇聚端开 `Federation:AcceptForwarded`
+  后按原始来源归组落库。由于落库幂等键仍是 `来源+日期` / `来源+类型+外部ID`，**县级直报省级 + 经市级转发不会双计**。
+  关闭 `AcceptForwarded` 时，来源与令牌身份不一致一律 `403`（默认，防越权伪造）。
+- **汇聚只读节点**：`Federation:Role=AGGREGATOR` 时 `AggregatorReadOnlyMiddleware` 对 `/api/*` 写方法返回 `403`，
+  放行 `auth` / `federation` / `admin/federation`，用于仅汇聚/中转的省级节点；默认 `BUSINESS` 不受影响。
+- **同步健康**：`FederationAdminService.GetHealthAsync` 依据各对端 `last_push_at/last_pull_at` 与
+  `EffectiveStaleMinutes`（`HealthStaleMinutes` 或 `max(2×SyncIntervalMinutes,60)`）判定 `healthy/stale`，并回带 `lastError`。
+- **运行时设置**：`FederationSettings` 单例把白名单键（`AutoSync`/`SyncIntervalMinutes`/`BackfillDays`/`RecordWindowHours`/
+  `IncludeSelfInAggregate`/`ForwardReceived`/`AcceptForwarded`/`HealthStaleMinutes`/`NodeName`/`RegionCode`）
+  持久化到 `fed_setting` 并**覆盖配置文件**，即时生效（读经内存缓存，更新后失效）。身份与密钥类
+  （`Enabled`/`NodeCode`/`Level`/`TokenMode`/`SharedKey`/`Role`）不在白名单，需改配置重启。
+- **上线推荐值（交付物已预置）**：`BackfillDays=7`（防中断缺数）、`SyncIntervalMinutes=30`（含错峰/抖动）、
+  `TokenMode=ASYMMETRIC`（生产建议）、省级 `Role=AGGREGATOR` 且 `AcceptForwarded=true`、市级 `ForwardReceived=true`。
+  单节点交付物见 `deploy/{province,city,county}/`。

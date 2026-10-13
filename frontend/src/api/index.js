@@ -149,6 +149,12 @@ export const federationApi = {
   aggregate: (range, regionPrefix) => http.get('/api/admin/federation/aggregate', { range, regionPrefix: regionPrefix || undefined }, { auth: true }),
   syncPush: (node) => http.post('/api/admin/federation/sync/push' + (node ? '?node=' + encodeURIComponent(node) : ''), {}, { auth: true }),
   syncPull: (node) => http.post('/api/admin/federation/sync/pull' + (node ? '?node=' + encodeURIComponent(node) : ''), {}, { auth: true }),
+  health: () => http.get('/api/admin/federation/health', {}, { auth: true }),
+  settings: () => http.get('/api/admin/federation/settings', {}, { auth: true }),
+  updateSettings: (values) => http.put('/api/admin/federation/settings', values, { auth: true }),
+  key: () => http.get('/api/admin/federation/key', {}, { auth: true }),
+  generateKey: (force) => http.post('/api/admin/federation/key/generate' + (force ? '?force=true' : ''), {}, { auth: true }),
+  fetchPeerKey: (id) => http.post(`/api/admin/federation/nodes/${id}/key/fetch`, {}, { auth: true }),
 }
 
 export const dashboardApi = {

@@ -91,17 +91,21 @@ public class FederationSnapshotBuilder
         return rows.ToDictionary(x => x.D, x => x.C);
     }
 
-    /// <summary>构建时间窗内的脱敏业务明细 (供应/需求/真实成交订单), 各类型不超过 limit 条。</summary>
-    public async Task<List<FedRecordDto>> BuildRecordsAsync(DateTime from, DateTime to, int limit)
+    /// <summary>
+    /// 构建时间窗内的脱敏业务明细 (供应/需求/真实成交订单), 各类型不超过 limit 条。
+    /// oldestFirst=true 时按时间升序 (供增量导出分页拉取, 便于游标前进)。
+    /// </summary>
+    public async Task<List<FedRecordDto>> BuildRecordsAsync(DateTime from, DateTime to, int limit, bool oldestFirst = false)
     {
         using var conn = _db.Create();
         var result = new List<FedRecordDto>();
+        var order = oldestFirst ? "ASC" : "DESC";
 
         // 供应信息
         var supplies = await conn.QueryAsync<(long Id, string Title, string CategoryName, decimal Quantity, string Unit,
             decimal? Price, string PriceUnit, string Status, string? CountyCode, string? CountyName,
             string? TownCode, string? TownName, DateTime CreatedAt)>(
-            @"SELECT s.id Id, s.title Title, c.name CategoryName, s.quantity Quantity, s.unit Unit,
+            $@"SELECT s.id Id, s.title Title, c.name CategoryName, s.quantity Quantity, s.unit Unit,
                      s.price Price, s.price_unit PriceUnit, s.status Status,
                      cr.region_code CountyCode, cr.region_name CountyName,
                      tr.region_code TownCode, tr.region_name TownName, s.created_at CreatedAt
@@ -110,7 +114,7 @@ public class FederationSnapshotBuilder
               LEFT JOIN sys_region cr ON cr.id=s.county_id
               LEFT JOIN sys_region tr ON tr.id=s.town_id
               WHERE s.created_at BETWEEN @from AND @to AND s.status IN ('ACTIVE','SOLD_OUT','OFF_SHELF')
-              ORDER BY s.created_at DESC LIMIT @limit",
+              ORDER BY s.created_at {order} LIMIT @limit",
             new { from, to, limit });
         foreach (var s in supplies)
             result.Add(NewRecord(FedRecordTypes.Supply, s.Id, s.TownCode ?? s.CountyCode, s.CreatedAt, new
@@ -132,7 +136,7 @@ public class FederationSnapshotBuilder
         var demands = await conn.QueryAsync<(long Id, string Title, string CategoryName, decimal Quantity, string Unit,
             decimal? PriceMin, decimal? PriceMax, string PriceUnit, string Status,
             string? CountyCode, string? CountyName, string? TownCode, string? TownName, DateTime CreatedAt)>(
-            @"SELECT d.id Id, d.title Title, c.name CategoryName, d.quantity Quantity, d.unit Unit,
+            $@"SELECT d.id Id, d.title Title, c.name CategoryName, d.quantity Quantity, d.unit Unit,
                      d.price_min PriceMin, d.price_max PriceMax, d.price_unit PriceUnit, d.status Status,
                      cr.region_code CountyCode, cr.region_name CountyName,
                      tr.region_code TownCode, tr.region_name TownName, d.created_at CreatedAt
@@ -141,7 +145,7 @@ public class FederationSnapshotBuilder
               LEFT JOIN sys_region cr ON cr.id=d.county_id
               LEFT JOIN sys_region tr ON tr.id=d.town_id
               WHERE d.created_at BETWEEN @from AND @to AND d.status IN ('ACTIVE','CLOSED','OFF_SHELF')
-              ORDER BY d.created_at DESC LIMIT @limit",
+              ORDER BY d.created_at {order} LIMIT @limit",
             new { from, to, limit });
         foreach (var d in demands)
             result.Add(NewRecord(FedRecordTypes.Demand, d.Id, d.TownCode ?? d.CountyCode, d.CreatedAt, new
@@ -177,7 +181,7 @@ public class FederationSnapshotBuilder
                LEFT JOIN sys_region cr ON cr.id=ps2.county_id
                LEFT JOIN sys_region tr ON tr.id=ps2.town_id
                WHERE {DashboardService.RealOrderWhere} AND o.completed_at BETWEEN @from AND @to
-               ORDER BY o.completed_at DESC LIMIT @limit",
+               ORDER BY o.completed_at {order} LIMIT @limit",
             new { from, to, limit });
         foreach (var o in orders)
             result.Add(NewRecord(FedRecordTypes.Order, o.Id, o.TownCode ?? o.CountyCode, o.CompletedAt, new

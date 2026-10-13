@@ -7,7 +7,8 @@
         <text class="tag" :class="{ danger: !self.enabled }">{{ self.enabled ? '已启用' : '未启用' }}</text>
       </view>
       <view class="muted mt8">{{ self.nodeCode || '未配置' }} · {{ levelText(self.level) }}<text v-if="self.regionCode"> · {{ self.regionCode }}</text></view>
-      <view class="muted mt8">自动同步：{{ self.autoSync ? ('每 ' + self.syncIntervalMinutes + ' 分钟') : '关闭' }}</view>
+      <view class="muted mt8">自动同步：{{ self.autoSync ? ('每 ' + self.syncIntervalMinutes + ' 分钟') : '关闭' }} · 角色：{{ roleText(self.role) }} · 令牌：{{ self.tokenMode || '—' }}</view>
+      <view class="muted mt8">汇聚含本节点：{{ self.includeSelfInAggregate ? '是' : '否' }} · 接收转发：{{ self.acceptForwarded ? '开' : '关' }} · 向上转发：{{ self.forwardReceived ? '开' : '关' }}</view>
       <view v-if="!self.hasIdentity" class="error mt8">未完成节点身份配置（Federation:NodeCode / SharedKey），节点接口不可用。</view>
       <view class="actions mt16">
         <text class="mini" @tap="doPush">立即推送</text>
@@ -20,6 +21,7 @@
       <view class="tab" :class="{ active: tab === 'node' }" @tap="switchTab('node')">对端节点</view>
       <view class="tab" :class="{ active: tab === 'audit' }" @tap="switchTab('audit')">上报审计</view>
       <view class="tab" :class="{ active: tab === 'agg' }" @tap="switchTab('agg')">跨节点汇聚</view>
+      <view class="tab" :class="{ active: tab === 'settings' }" @tap="switchTab('settings')">运行设置</view>
     </view>
 
     <!-- 对端节点 -->
@@ -37,12 +39,13 @@
           </view>
           <view class="muted mt8">{{ n.nodeCode }} · {{ levelText(n.level) }}<text v-if="n.regionCode"> · {{ n.regionCode }}</text> · {{ dirText(n.direction) }}</view>
           <view class="muted mt8">{{ n.baseUrl }}</view>
-          <view class="muted mt8">令牌：{{ n.hasToken ? '已配置' : '使用本节点令牌(自动)' }}</view>
+          <view class="muted mt8">令牌：{{ n.hasToken ? '已配置' : '使用本节点令牌(自动)' }} · 公钥：{{ n.hasPublicKey ? '已登记' : '未登记' }}</view>
           <view class="muted mt8">推送 {{ fmt(n.lastPushAt) || '—' }} · 拉取 {{ fmt(n.lastPullAt) || '—' }}</view>
           <view v-if="n.lastError" class="error mt8">{{ n.lastError }}</view>
           <view class="actions mt16">
             <text class="mini" @tap="pushOne(n)">推送</text>
             <text class="mini" @tap="pullOne(n)">拉取</text>
+            <text class="mini" @tap="fetchKey(n)">拉取公钥</text>
             <text class="mini" @tap="toggleNode(n)">{{ n.status === 'ACTIVE' ? '停用' : '启用' }}</text>
             <text class="mini" @tap="editNode(n)">编辑</text>
             <text class="mini danger" @tap="removeNode(n)">删除</text>
@@ -97,7 +100,7 @@
         <view class="muted mt8">批次 {{ r.batchNo }}</view>
         <view class="muted mt8">指标 {{ r.metricCount }} · 明细 {{ r.recordCount }} · {{ fmt(r.receivedAt) }}</view>
       </view>
-      <view v-if="reports.length" class="load-more muted" @tap="loadReports(true)">加载更多</view>
+      <view v-if="reportHasMore" class="load-more muted" @tap="loadReports(true)">加载更多</view>
 
       <view class="section-title mt24">最近业务明细</view>
       <view class="card search-bar">
@@ -116,7 +119,7 @@
     </view>
 
     <!-- 跨节点汇聚 -->
-    <view v-else class="container">
+    <view v-else-if="tab === 'agg'" class="container">
       <view class="card search-bar">
         <picker :range="ranges" :value="rangeIndex" @change="onRange"><text class="flex1">统计区间：{{ ranges[rangeIndex] }}</text></picker>
         <text class="mini" @tap="loadAggregate">刷新</text>
@@ -145,6 +148,48 @@
         <text class="muted">{{ p.orderCount }} 单 / {{ p.tradeAmount }} 元</text>
       </view>
     </view>
+
+    <!-- 运行设置 -->
+    <view v-else class="container">
+      <view class="section-title">同步健康</view>
+      <view class="card">
+        <view class="between">
+          <text class="card-title">总体状态</text>
+          <text class="tag" :class="{ danger: !health.healthy }">{{ health.healthy ? '正常' : '异常' }}</text>
+        </view>
+        <view class="muted mt8">检查 {{ fmt(health.checkedAt) || '—' }} · 活跃对端 {{ health.activeNodes }} · 异常 {{ health.unhealthyNodes }} · 过期阈值 {{ health.staleMinutes }} 分钟</view>
+        <view v-if="!health.peers.length" class="muted mt8">暂无对端节点</view>
+        <view v-for="p in health.peers" :key="p.nodeCode" class="hl mt8">
+          <text :class="{ error: !p.healthy }">{{ p.nodeCode }}</text>
+          <text class="muted">{{ minsText(p.lastSyncMinutes) }}{{ p.stale ? ' · 已过期' : '' }}</text>
+        </view>
+        <view v-if="health.peers.some(p => p.lastError)" class="error mt8">
+          {{ health.peers.filter(p => p.lastError).map(p => p.nodeCode + ': ' + p.lastError).join('; ') }}
+        </view>
+        <view class="actions mt16"><text class="mini" @tap="loadHealth">刷新健康</text></view>
+      </view>
+
+      <view class="section-title mt24">运行设置（热生效）</view>
+      <view class="card">
+        <view class="muted">覆盖优先级：此处设置 &gt; 部署配置。清空某值保存即恢复部署默认。</view>
+        <view v-for="s in settingItems" :key="s.key" class="field">
+          <text class="field-label">{{ s.key }}</text>
+          <input v-model="s.value" class="input" placeholder="留空=使用部署默认" />
+        </view>
+        <button class="btn btn-block mt8" @tap="saveSettings">保存设置</button>
+      </view>
+
+      <view class="section-title mt24">密钥管理（非对称令牌）</view>
+      <view class="card">
+        <view class="muted">令牌模式：{{ key.mode || self.tokenMode || '—' }} · 算法：{{ key.alg || 'RS256' }} · 密钥对：{{ key.hasKeypair ? '已生成' : '未生成' }}</view>
+        <textarea class="input token-text mt8" :value="key.publicKey" disabled />
+        <view class="actions mt8">
+          <text class="mini" @tap="copyKey">复制公钥</text>
+          <text class="mini" @tap="generateKey">生成/重置密钥对</text>
+        </view>
+        <view class="muted mt8">对端需在“对端节点”中点击“拉取公钥”，方能校验本节点 RS256 令牌。</view>
+      </view>
+    </view>
   </view>
 </template>
 
@@ -160,16 +205,19 @@ export default {
   data() {
     return {
       tab: 'node',
-      self: { enabled: false, hasIdentity: false, nodeCode: '', nodeName: '', level: '', regionCode: '', autoSync: false, syncIntervalMinutes: 0 },
+      self: { enabled: false, hasIdentity: false, nodeCode: '', nodeName: '', level: '', regionCode: '', autoSync: false, syncIntervalMinutes: 0, tokenMode: '', role: '', includeSelfInAggregate: true, forwardReceived: false, acceptForwarded: false },
       nodes: [], editingId: 0,
       levels: LEVELS, levelIndex: 0,
       directions: DIRECTIONS, directionLabels: DIRECTION_LABELS, dirIndex: 0,
-      form: { nodeCode: '', nodeName: '', level: 'COUNTY', regionCode: '', baseUrl: '', nodeToken: '' },
+      form: { nodeCode: '', nodeName: '', level: 'COUNTY', regionCode: '', baseUrl: '', nodeToken: '', status: 'ACTIVE' },
       tokenForm: { nodeCode: '', days: '365' }, issuedToken: '',
-      reports: [], reportPage: 1,
+      reports: [], reportPage: 1, reportHasMore: true,
       records: [], recordTypeLabels: ['全部类型', 'ORDER', 'SUPPLY', 'DEMAND'], typeIndex: 0,
       ranges: ['7d', '30d', '90d'], rangeIndex: 1, regionPrefix: '',
       agg: { nodeCount: 0, totalOrders: 0, totalTradeAmount: 0, byNode: [], points: [] },
+      health: { healthy: false, checkedAt: '', activeNodes: 0, unhealthyNodes: 0, staleMinutes: 0, peers: [] },
+      settingItems: [],
+      key: { mode: '', alg: '', hasKeypair: false, publicKey: '' },
     }
   },
   onLoad() {
@@ -199,8 +247,10 @@ export default {
   methods: {
     switchTab(t) {
       this.tab = t
+      if (t === 'node') this.loadNodes()
       if (t === 'audit') { this.loadReports(); this.loadRecords() }
       if (t === 'agg') this.loadAggregate()
+      if (t === 'settings') { this.loadHealth(); this.loadSettings(); this.loadKey() }
     },
     async loadSelf() {
       try { this.self = await federationApi.self() } catch (e) {}
@@ -252,14 +302,14 @@ export default {
     },
     editNode(n) {
       this.editingId = n.id
-      this.form = { nodeCode: n.nodeCode, nodeName: n.nodeName, level: n.level, regionCode: n.regionCode || '', baseUrl: n.baseUrl, nodeToken: '' }
+      this.form = { nodeCode: n.nodeCode, nodeName: n.nodeName, level: n.level, regionCode: n.regionCode || '', baseUrl: n.baseUrl, nodeToken: '', status: n.status || 'ACTIVE' }
       this.levelIndex = Math.max(0, LEVELS.indexOf(n.level))
       this.dirIndex = Math.max(0, DIRECTIONS.indexOf(n.direction))
       uni.pageScrollTo({ scrollTop: 0, duration: 200 })
     },
     resetForm() {
       this.editingId = 0
-      this.form = { nodeCode: '', nodeName: '', level: 'COUNTY', regionCode: '', baseUrl: '', nodeToken: '' }
+      this.form = { nodeCode: '', nodeName: '', level: 'COUNTY', regionCode: '', baseUrl: '', nodeToken: '', status: 'ACTIVE' }
       this.levelIndex = 0; this.dirIndex = 0
     },
     async saveNode() {
@@ -270,7 +320,7 @@ export default {
       const payload = {
         nodeCode: f.nodeCode, nodeName: f.nodeName, level: f.level,
         regionCode: f.regionCode || null, baseUrl: f.baseUrl,
-        nodeToken: f.nodeToken || null, direction: DIRECTIONS[this.dirIndex], status: 'ACTIVE',
+        nodeToken: f.nodeToken || null, direction: DIRECTIONS[this.dirIndex], status: f.status || 'ACTIVE',
       }
       try {
         if (this.editingId) await federationApi.updateNode(this.editingId, payload)
@@ -298,9 +348,15 @@ export default {
         const page = more ? this.reportPage : 1
         const res = await federationApi.reports({ page, size: 20 })
         const items = (res && res.items) || []
-        this.reports = more ? this.reports.concat(items) : items
-        this.reportPage = items.length >= 20 ? page + 1 : page
-      } catch (e) { if (!more) this.reports = [] }
+        if (more) {
+          const seen = new Set(this.reports.map(r => r.id))
+          this.reports = this.reports.concat(items.filter(r => !seen.has(r.id)))
+        } else {
+          this.reports = items
+        }
+        this.reportHasMore = items.length >= 20
+        this.reportPage = this.reportHasMore ? page + 1 : page
+      } catch (e) { if (!more) { this.reports = []; this.reportHasMore = false } }
     },
     onType(e) { this.typeIndex = Number(e.detail.value); this.loadRecords() },
     async loadRecords() {
@@ -315,6 +371,52 @@ export default {
       } catch (e) {}
     },
     levelText(l) { return { PROVINCE: '省级', CITY: '市级', COUNTY: '县级' }[l] || l || '' },
+    roleText(r) { return { BUSINESS: '经营节点', AGGREGATOR: '汇聚只读' }[r] || r || '' },
+    minsText(m) { return m == null ? '从未同步' : (Math.round(m) + ' 分钟前') },
+    async loadHealth() {
+      try { this.health = (await federationApi.health()) || this.health } catch (e) {}
+    },
+    async loadSettings() {
+      try {
+        const r = await federationApi.settings()
+        this.settingItems = (r && r.items ? r.items : []).map(i => ({ key: i.key, value: i.value == null ? '' : String(i.value) }))
+      } catch (e) { this.settingItems = [] }
+    },
+    async saveSettings() {
+      const payload = {}
+      this.settingItems.forEach(i => { payload[i.key] = i.value })
+      try {
+        const r = await federationApi.updateSettings(payload)
+        uni.showToast({ title: '已保存', icon: 'none' })
+        if (r && r.items) this.settingItems = r.items.map(i => ({ key: i.key, value: i.value == null ? '' : String(i.value) }))
+        this.loadSelf()
+      } catch (e) {}
+    },
+    async loadKey() {
+      try { this.key = (await federationApi.key()) || this.key } catch (e) {}
+    },
+    async generateKey() {
+      const confirm = await new Promise(resolve => uni.showModal({
+        title: '生成/重置密钥对', content: '重置后旧公钥失效，需重新在各地拉取公钥。确定继续？', success: r => resolve(r.confirm),
+      }))
+      if (!confirm) return
+      try {
+        const r = await federationApi.generateKey(true)
+        this.key = { ...this.key, hasKeypair: true, publicKey: r.publicKey, alg: r.alg }
+        uni.showToast({ title: '已生成', icon: 'none' })
+      } catch (e) {}
+    },
+    copyKey() {
+      if (!this.key.publicKey) return
+      uni.setClipboardData({ data: this.key.publicKey, success: () => uni.showToast({ title: '已复制' }) })
+    },
+    async fetchKey(n) {
+      try {
+        await federationApi.fetchPeerKey(n.id)
+        uni.showToast({ title: '已拉取公钥', icon: 'none' })
+        this.loadNodes()
+      } catch (e) {}
+    },
     dirText(d) { return { BOTH: '双向', PUSH: '推送', PULL: '拉取' }[d] || d || '' },
     fmt(t) { return t ? String(t).replace('T', ' ').slice(0, 16) : '' },
     recordSummary(rd) {
@@ -346,6 +448,7 @@ export default {
 .section-title { font-size: 30rpx; font-weight: 600; }
 .group-title { display: flex; align-items: center; justify-content: space-between; font-size: 28rpx; font-weight: 600; color: #2e8b57; margin: 24rpx 0 8rpx; }
 .load-more { text-align: center; padding: 24rpx 0; }
+.hl { display: flex; align-items: center; justify-content: space-between; }
 .error { color: #dd524d; font-size: 24rpx; }
 .token-text { width: 100%; min-height: 120rpx; font-size: 22rpx; word-break: break-all; }
 </style>

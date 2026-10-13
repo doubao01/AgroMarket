@@ -1,6 +1,6 @@
 # AgroMarket 多级节点部署手册
 
-本文档说明如何把一个 AgroMarket 实例部署成**省 / 市 / 县任意层级的一个节点**，并把多个节点组成**扁平对等的联邦**，做到「多级部署不出错」。
+本文档说明如何把一个 AgroMarket 实例部署成**省 / 市 / 县任意层级的一个节点**，并把多个节点组成**联邦**：默认**扁平对等（星型扇入）**，可选开启**多跳汇聚**（县→市→省），做到「多级部署不出错」。
 
 > 设计原理（拓扑、令牌、幂等、口径、脱敏）见 [`federation-design.md`](./federation-design.md)。
 
@@ -27,36 +27,45 @@
 
 | 配置键 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `Enabled` | `Federation__Enabled` | `false` | 联动总开关。**为 `false` 时联动接口返回 400，但业务功能不受影响**。 |
+| `Enabled` | `Federation__Enabled` | `false` | 联动总开关。为 `false` 时关闭后台定时同步、停用本节点联动接口（公开 `GET /api/federation/node/key` 返回 400，节点接口无有效身份时 401），但业务功能不受影响。 |
 | `NodeCode` | `Federation__NodeCode` | 空 | 本节点全局唯一编码，如 `node-xixian`。 |
 | `NodeName` | `Federation__NodeName` | 空 | 展示名称，如 `息县农贸通`。 |
 | `Level` | `Federation__Level` | `COUNTY` | `PROVINCE` / `CITY` / `COUNTY`。 |
 | `RegionCode` | `Federation__RegionCode` | 空 | 行政区划编码（对应 `sys_region.region_code`），用于按区划关联。 |
-| `SharedKey` | `Federation__SharedKey` | 空 | 节点令牌签名密钥，**≥32 字节，全联邦一致**。 |
+| `SharedKey` | `Federation__SharedKey` | 空 | 节点令牌签名密钥，**≥32 字节，全联邦一致**（`SYMMETRIC` 模式必填）。 |
+| `TokenMode` | `Federation__TokenMode` | `SYMMETRIC` | 令牌签名模式：`SYMMETRIC`(HS256 共享密钥) / `ASYMMETRIC`(RS256 每节点密钥对)。 |
+| `Role` | `Federation__Role` | `BUSINESS` | 节点角色：`BUSINESS`(业务读写) / `AGGREGATOR`(汇聚只读，禁业务写接口)。 |
+| `ForwardReceived` | `Federation__ForwardReceived` | `false` | 是否把"已接收的下级数据"再向上级转发（多跳 县→市→省）。仅中间节点开启。 |
+| `AcceptForwarded` | `Federation__AcceptForwarded` | `false` | 是否接收"非直接对端来源"的转发数据。仅上级/汇聚节点开启；关闭时来源与令牌身份不一致一律 403。 |
 | `AutoSync` | `Federation__AutoSync` | `true` | 是否开启后台定时同步。 |
-| `SyncIntervalMinutes` | `Federation__SyncIntervalMinutes` | `30` | 后台同步间隔（分钟）。 |
-| `BackfillDays` | `Federation__BackfillDays` | `1` | 每次上报回补的历史天数（含当天）。 |
+| `SyncIntervalMinutes` | `Federation__SyncIntervalMinutes` | `30` | 后台同步间隔（分钟）。worker 内置启动错峰（10~40s）与周期抖动（0~20%）。 |
+| `BackfillDays` | `Federation__BackfillDays` | `7` | 每次上报回补的历史天数（含当天）。**建议 ≥7**，防止节点中断 >1 天导致指标永久缺失。 |
 | `RecordWindowHours` | `Federation__RecordWindowHours` | `24` | 明细上报时间窗（小时）。 |
 | `MaxRecordsPerPush` | `Federation__MaxRecordsPerPush` | `500` | 单批明细上限。 |
 | `TokenDays` | `Federation__TokenDays` | `365` | 签发节点令牌的有效期（天）。 |
 | `IncludeSelfInAggregate` | `Federation__IncludeSelfInAggregate` | `true` | 跨节点汇聚是否纳入本节点自身指标，形成"本节点 + 对端"全景；置 `false` 则仅汇总已接收的对端数据。 |
+| `HealthStaleMinutes` | `Federation__HealthStaleMinutes` | `0` | 对端"过期"判定阈值（分钟）；`0` 表示自动取 `max(2×SyncIntervalMinutes, 60)`。 |
 
-**启动强校验**：当 `Enabled=true` 时，`NodeCode` / `NodeName` 非空且 `SharedKey` ≥32 字节，否则 API **启动即失败**（避免带着半配置上线）。因此多级部署时，先把身份与密钥配置齐全再启动。
+> **可运行时热改**：`AutoSync` / `SyncIntervalMinutes` / `BackfillDays` / `RecordWindowHours` / `IncludeSelfInAggregate` / `ForwardReceived` / `AcceptForwarded` / `HealthStaleMinutes` / `NodeName` / `RegionCode` 可通过管理端「联动 → 设置」或 `PUT /api/admin/federation/settings` 更新并即时生效（持久化于 `fed_setting`，覆盖配置文件）。**身份与密钥类**（`Enabled` / `NodeCode` / `Level` / `TokenMode` / `SharedKey` / `Role`）需改配置后重启。
+
+**启动强校验**：当 `Enabled=true` 时，`NodeCode` / `NodeName` 非空且 `SharedKey` ≥32 字节（`ASYMMETRIC` 模式除外），`TokenMode` 与 `Role` 取值合法，否则 API **启动即失败**（避免带着半配置上线）。因此多级部署时，先把身份与密钥配置齐全再启动。
 
 ---
 
-## 3. 数据库初始化（关键：7 步全执行）
+## 3. 数据库初始化（关键：9 步全执行）
 
 所有迁移按序编号，必须**全部执行**，否则会缺表：
 
 ```
-01_schema.sql          业务主表
-02_seed.sql            种子数据（含管理员账号）
-03_chat.sql            聊天
-04_chat_wechat.sql     微信聊天扩展
-05_ai_chat.sql         AI 会话
-06_chat_cleanup.sql    聊天清理
-07_federation.sql      联动 5 张表  ← 上一版 compose 曾漏挂此步
+01_schema.sql              业务主表
+02_seed.sql                种子数据（含管理员账号）
+03_chat.sql                聊天
+04_chat_wechat.sql         微信聊天扩展
+05_ai_chat.sql             AI 会话
+06_chat_cleanup.sql        聊天清理
+07_federation.sql          联动 5 张表        ← 早期 compose 曾漏挂此步
+08_federation_keys.sql     非对称密钥（fed_keypair + fed_node 公钥列）
+09_federation_settings.sql 运行时设置（fed_setting）
 ```
 
 ### 3.1 容器方式（推荐，自动串行）
@@ -84,7 +93,9 @@ DB_HOST=127.0.0.1 DB_PORT=3306 DB_USER=root DB_PASSWORD=xxx \
 ```sql
 SELECT table_name FROM information_schema.tables
 WHERE table_schema='agro_market' AND table_name LIKE 'fed_%';
--- 期望 5 张: fed_node / fed_report / fed_daily_metric / fed_business_record / fed_sync_cursor
+-- 期望 7 张:
+--   fed_node / fed_report / fed_daily_metric / fed_business_record / fed_sync_cursor  (07)
+--   fed_keypair  (08)  fed_setting (09)
 ```
 
 ---
@@ -108,15 +119,37 @@ FEDERATION_NODE_NAME=息县农贸通
 FEDERATION_LEVEL=COUNTY
 FEDERATION_REGION_CODE=411528
 FEDERATION_SHARED_KEY=<与其它节点一致的 ≥32 字节密钥>
+# 可选: 生产建议开启非对称令牌
+FEDERATION_TOKEN_MODE=SYMMETRIC
+# 可选: 汇聚只读节点用 AGGREGATOR（禁业务写）
+FEDERATION_ROLE=BUSINESS
 ```
+
+> **开箱即用的单节点交付物**见 `deploy/`（省 / 市 / 县各一套，已按生产建议预置默认值），详见第 5.0 节。
 
 ---
 
-## 5. 多级集群部署（省 + 市 + 县）
+## 5. 三套交付物（`deploy/`）
 
-模板：`docker-compose.cluster.yml`（默认给了 1 省级 + 2 县级 三个节点，可增减）。
+`deploy/` 目录提供**省 / 市 / 县三套独立单节点交付物**，每套含 `docker-compose.yml` + `.env.example` + `README.md`：
 
-### 5.1 准备环境变量
+| 目录 | 级别 | Role | AcceptForwarded | ForwardReceived | 用途 |
+| --- | --- | --- | --- | --- | --- |
+| `deploy/province` | PROVINCE | `AGGREGATOR` | `true` | `false` | 只读汇聚，接收上报 |
+| `deploy/city` | CITY | `BUSINESS` | `true` | `true` | 中间汇聚，接收县级并向上转发 |
+| `deploy/county` | COUNTY | `BUSINESS` | `false` | `false` | 业务上报端 |
+
+各套 `.env.example` 已预置 `FEDERATION_BACKFILL_DAYS=7` / `FEDERATION_SYNC_INTERVAL_MINUTES=30` / `FEDERATION_HEALTH_STALE_MINUTES=0`。部署步骤见各目录 `README.md`；总览见 `deploy/README.md`。
+
+> `deploy/<level>/docker-compose.yml` 通过相对路径复用仓库根目录的 `../../backend` 与 `../../database`，请**在该目录内**执行 `docker compose`。
+
+---
+
+## 6. 多级集群部署（省 + 市 + 县）
+
+模板：`docker-compose.cluster.yml`（默认给了 1 省级 + 1 市级 + 2 县级 共 4 个节点，可增减）。市级默认开启 `ForwardReceived`，演示多跳 `县→市→省`。
+
+### 6.1 准备环境变量
 
 ```bash
 cp .env.cluster.example .env.cluster
@@ -133,13 +166,19 @@ MYSQL_USER=agromarket
 MYSQL_PASSWORD=<业务账号密码>
 JWT_SECRET_KEY=<≥32 字节>
 FEDERATION_SHARED_KEY=<≥32 字节，所有节点一致>
+FEDERATION_TOKEN_MODE=SYMMETRIC
+FEDERATION_SYNC_INTERVAL_MINUTES=30
+FEDERATION_BACKFILL_DAYS=7
+FEDERATION_INCLUDE_SELF_IN_AGGREGATE=true
+FEDERATION_HEALTH_STALE_MINUTES=0
 API_PORT_HENAN=8080
+API_PORT_ZHOUKOU=8083
 API_PORT_XIXIAN=8081
 API_PORT_HUAIYANG=8082
 CORS_ORIGIN=http://localhost:5173
 ```
 
-### 5.2 启动
+### 6.2 启动
 
 ```bash
 docker compose -f docker-compose.cluster.yml --env-file .env.cluster up -d --build
@@ -148,19 +187,21 @@ docker compose -f docker-compose.cluster.yml --env-file .env.cluster logs -f fed
 
 编排会依次完成：
 
-1. `db-*` 各自初始化数据库（执行 01–07 全部迁移）；
-2. `api-*` 各自以待配置的身份启动（`node-henan` / `node-xixian` / `node-huaiyang`）；
+1. `db-*` 各自初始化数据库（执行 01–09 全部迁移）；
+2. `api-*` 各自以待配置的身份启动（`node-henan` 省 / `node-zhoukou` 市 / `node-xixian`、`node-huaiyang` 县）；市级开启 `ForwardReceived`，省级与市级开启 `AcceptForwarded`；
 3. `federation-bootstrap` 一次性容器：等待所有 API `/health` 就绪 → 用管理员账号登录每个节点 → **把「除自己以外」的节点登记为对端**（`baseUrl` 用 Docker 网络内服务名，如 `http://api-xixian:8080`）→ 触发首轮 `pull` + `push` → 打印各节点汇聚结果。
 
 > `federation-bootstrap` 是 `restart: "no"` 的一次性任务，跑完即退出，属正常现象。
+> 逐行按**原始来源**落库（幂等键 `来源+日期`），因此县级直报省级 + 经市级转发不会双计。
 
-### 5.3 验证
+### 6.3 验证
 
 各节点管理后台（用管理员登录后打开「联动」页）应能看到：
 
-- 顶部本节点卡片：`NodeCode` / 名称 / 层级正确；
+- 顶部本节点卡片：`NodeCode` / 名称 / 层级 / 角色 / 令牌模式正确；
 - 「对端节点」列表：看到其余 N-1 个节点，`status=ACTIVE`，且 `lastPushAt/lastPullAt` 有值；
-- 「跨节点汇聚」：`nodeCount` 等于节点总数，且含有其它节点的贡献。
+- 「跨节点汇聚」：`nodeCount` 等于节点总数，且含有其它节点的贡献；
+- 「设置」Tab：同步健康（各对端 `healthy/stale/lastError`）与运行设置表单。
 
 命令行抽查任一节点：
 
@@ -171,22 +212,24 @@ TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login/password \
 
 curl -s http://localhost:8080/api/admin/federation/self      -H "Authorization: Bearer $TOKEN"
 curl -s http://localhost:8080/api/admin/federation/nodes     -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:8080/api/admin/federation/health    -H "Authorization: Bearer $TOKEN"
+curl -s http://localhost:8080/api/admin/federation/settings  -H "Authorization: Bearer $TOKEN"
 curl -s "http://localhost:8080/api/admin/federation/aggregate?range=30d" -H "Authorization: Bearer $TOKEN"
 # 省/市视角: 按区划码前缀过滤来源（省=前2位，市=前4位）
 curl -s "http://localhost:8080/api/admin/federation/aggregate?range=30d&regionPrefix=41"   -H "Authorization: Bearer $TOKEN"
-curl -s "http://localhost:8080/api/admin/federation/aggregate?range=30d&regionPrefix=4101" -H "Authorization: Bearer $TOKEN"
+curl -s "http://localhost:8080/api/admin/federation/aggregate?range=30d&regionPrefix=4116" -H "Authorization: Bearer $TOKEN"
 ```
 
-### 5.4 新增一个节点
+### 6.4 新增一个节点
 
-1. 复制 `db-xixian` + `api-xixian` 两段，改：服务名、`container_name`、数据卷名、`ConnectionStrings__Default` 的 `Server=`、`Federation__NodeCode/NodeName/Level/RegionCode`、对外端口；
+1. 复制 `db-xixian` + `api-xixian` 两段，改：服务名、`container_name`、数据卷名、`ConnectionStrings__Default` 的 `Server=`、`Federation__NodeCode/NodeName/Level/RegionCode/Role/AcceptForwarded/ForwardReceived`、对外端口；
 2. 在 `federation-bootstrap` 的 `FED_ALL` 末尾追加 `node-xxx|http://api-xxx:8080|COUNTY|名称|区划码`；
 3. 在 `volumes:` 段补上新数据卷；
 4. `up -d` 后 bootstrap 会重新跑（幂等），新节点与既有节点自动互相登记。
 
 ---
 
-## 6. 非 Docker / 跨机房部署
+## 7. 非 Docker / 跨机房部署
 
 每个节点各自起一套 `.NET API + MySQL`，用环境变量注入身份：
 
@@ -220,42 +263,48 @@ dotnet AgroMarket.Api.dll
 
 ---
 
-## 7. 升级已上线的节点
+## 8. 升级已上线的节点
 
-数据库迁移是**追加式**的，容器初始化只在空卷时执行。已上线的库需手工补跑新迁移：
+数据库迁移是**追加式**的，容器初始化只在空卷时执行。已上线的库需手工补跑新迁移（按编号顺序，已执行过的可跳过）：
 
 ```bash
-# 只跑新增的迁移文件（示例：补 07）
 mysql -h <host> -u root -p < database/07_federation.sql
+mysql -h <host> -u root -p < database/08_federation_keys.sql
+mysql -h <host> -u root -p < database/09_federation_settings.sql
 ```
 
 代码升级：`docker compose ... up -d --build`（API 重启即可，无需停库）。若本次升级新增了 `Federation:*` 配置项，务必同步补进各节点 `.env`，**并保证 `SharedKey` 全联邦一致**，否则升级后节点间会出现 401。
 
 ---
 
-## 8. 排障对照表
+## 9. 排障对照表
 
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
-| API 启动失败，日志含 `Federation` 校验 | `Enabled=true` 但 `NodeCode/NodeName/SharedKey` 缺失或 `SharedKey<32 字节` | 补齐身份与密钥；或先置 `Enabled=false` |
+| API 启动失败，日志含 `Federation` 校验 | `Enabled=true` 但 `NodeCode/NodeName/SharedKey` 缺失、`SharedKey<32 字节`、或 `TokenMode/Role` 非法 | 补齐身份与密钥/修正取值；或先置 `Enabled=false` |
 | 登记对端成功但 `lastPushAt` 一直为空 | 对端 `baseUrl` 不可达 / 端口写错 / 防火墙 | 在本节点容器内 `curl <baseUrl>/health` 验证 |
-| 上报返回 **401** | 节点令牌无效或过期 | 确认两端 `Federation__SharedKey` 完全一致；重新签发令牌或重启节点 |
-| 上报返回 **403** | 载荷 `nodeCode` 与令牌身份不一致 | 正常防伪行为；检查是否用了别的节点的令牌/别名 |
+| 上报返回 **401** | 节点令牌无效或过期；ASYMMETRIC 下未登记对端公钥 | 确认两端 `SharedKey` 一致；或在对端条目上「拉取公钥」 |
+| 上报返回 **403** | 载荷来源与令牌身份不一致，且本节点未开 `AcceptForwarded` | 若确需接收转发数据，开启接收端 `AcceptForwarded=true`；否则为正常防伪 |
+| 业务写接口返回 **403** | 本节点 `Role=AGGREGATOR`（汇聚只读） | 汇聚节点设计如此；如有本地业务，改 `Role=BUSINESS` |
+| 健康页某对端 `stale` | 超过 `EffectiveStaleMinutes` 未同步 | 检查网络 / 对端运行状态；点「立即同步」；必要时调大 `HealthStaleMinutes` |
 | `aggregate` 里只有本节点 | 对端未登记、方向不含 `PULL`、或尚未同步 | 检查「对端节点」页方向与状态，点「立即同步」 |
-| 全新库缺 `chat_*` / `fed_*` 表 | 迁移未全量执行 | 用 `database/docker-init.sh`（遍历 `0*.sql`）重建，或手工补跑缺失 SQL |
+| 全新库缺 `chat_*` / `fed_*` / `fed_setting` 表 | 迁移未全量执行 | 用 `database/docker-init.sh`（遍历 `0*.sql`）重建，或手工补跑缺失 SQL |
 | 两个节点都连到同一个库 | 库名都是 `agro_market` 且指向同一 MySQL 实例 | 每个节点必须独立 MySQL 实例（不同容器/端口） |
 | 中文节点名乱码 | 连接串缺字符集 / 库非 utf8mb4 | 连接串加 `CharSet=utf8mb4`，库用 `utf8mb4_unicode_ci` |
 
 ---
 
-## 9. 相关文件
+## 10. 相关文件
 
 | 文件 | 说明 |
 | --- | --- |
-| `docker-compose.cluster.yml` | 多级节点集群编排（3 节点 + 引导任务） |
+| `deploy/{province,city,county}/` | 省 / 市 / 县三套单节点交付物（compose + env 模板 + README） |
+| `deploy/README.md` | 三套交付物总览与拓扑/上线顺序 |
+| `docker-compose.cluster.yml` | 多级节点集群编排（1 省 + 1 市 + 2 县 + 引导任务） |
 | `.env.cluster.example` | 集群环境变量模板 |
 | `docker-compose.yml` | 单节点编排（联动默认关闭） |
 | `database/docker-init.sh` | 容器内按序执行全部迁移 |
 | `database/init-db.sh` | 手工/宿主机执行全部迁移 |
 | `scripts/federation-bootstrap.sh` | 联邦引导：登记对端 + 首轮同步（幂等，可重复运行） |
+| `scripts/federation-demo.sh` | 本地三级演示脚本 |
 | `.monkeycode/docs/federation-design.md` | 联动设计说明 |

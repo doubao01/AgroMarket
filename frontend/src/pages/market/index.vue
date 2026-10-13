@@ -75,6 +75,7 @@ export default {
       orderBy: '',
       townId: null,
       villageId: null,
+      villageName: '',
       townLabel: '全部乡镇',
       page: 1,
       pageSize: 10,
@@ -89,6 +90,7 @@ export default {
     const loc = getLocation()
     this.townId = loc ? loc.townId : null
     this.villageId = loc ? (loc.villageId || null) : null
+    this.villageName = loc ? (loc.villageName || '') : ''
     this.townLabel = getTownLabel(loc)
     this.reload()
   },
@@ -97,6 +99,7 @@ export default {
     if (!sameLocation(loc, { townId: this.townId, villageId: this.villageId })) {
       this.townId = loc ? loc.townId : null
       this.villageId = loc ? (loc.villageId || null) : null
+      this.villageName = loc ? (loc.villageName || '') : ''
       this.townLabel = getTownLabel(loc)
       this.reload()
     }
@@ -117,10 +120,12 @@ export default {
     onTownChange(e) {
       this.townLabel = e.townName || '全部乡镇'
       this.villageId = null
+      this.villageName = ''
       this.persist()
     },
     onVillageChange(e) {
       this.villageId = e.villageId || null
+      this.villageName = e.villageName || ''
       this.persist()
     },
     persist() {
@@ -129,7 +134,7 @@ export default {
         townId: this.townId,
         townName: this.townLabel === '全部乡镇' ? '' : this.townLabel,
         villageId: this.villageId,
-        villageName: '',
+        villageName: this.villageName,
       })
       this.reload()
     },
