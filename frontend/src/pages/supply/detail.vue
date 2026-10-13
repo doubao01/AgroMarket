@@ -7,6 +7,7 @@
         <view class="mt8 muted">可售数量：{{ item.quantity }}{{ item.unit }}
           <text v-if="item.minOrderQty"> · 起订 {{ item.minOrderQty }}{{ item.unit }}</text>
         </view>
+        <view v-if="item.soldQuantity > 0" class="mt8 muted">已售 {{ item.soldQuantity }}{{ item.unit }}</view>
         <view class="mt16">
           <text class="tag">{{ item.categoryName || '农产品' }}</text>
           <text v-if="item.negotiable" class="tag">可议价</text>
@@ -28,7 +29,8 @@
       </view>
 
       <view class="card">
-        <view class="between"><text class="field-label">产地</text><text>{{ (item.countyName || '息县') }} {{ item.townName || '' }} {{ item.villageName || '' }}</text></view>
+        <view class="between"><text class="field-label">已售</text><text>{{ item.soldQuantity > 0 ? item.soldQuantity + ' ' + item.unit : '暂无成交' }}</text></view>
+        <view class="between mt16"><text class="field-label">产地</text><text>{{ (item.countyName || '息县') }} {{ item.townName || '' }} {{ item.villageName || '' }}</text></view>
         <view class="between mt16"><text class="field-label">规格</text><text>{{ item.spec || '—' }}</text></view>
         <view class="between mt16"><text class="field-label">上市时间</text><text>{{ item.harvestTime || '—' }}</text></view>
         <view class="between mt16"><text class="field-label">交付方式</text><text>{{ deliveryText(item.deliveryMode) }}</text></view>
