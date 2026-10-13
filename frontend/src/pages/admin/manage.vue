@@ -3,6 +3,8 @@
     <view class="tabs">
       <view class="tab" :class="{ active: tab === 'user' }" @tap="switchTab('user')">用户管理</view>
       <view class="tab" :class="{ active: tab === 'notice' }" @tap="switchTab('notice')">公告发布</view>
+      <view class="tab" :class="{ active: tab === 'banner' }" @tap="switchTab('banner')">焦点图</view>
+      <view class="tab" :class="{ active: tab === 'post' }" @tap="switchTab('post')">社区治理</view>
       <view class="tab" :class="{ active: tab === 'log' }" @tap="switchTab('log')">操作日志</view>
     </view>
 
@@ -51,6 +53,62 @@
       </view>
     </view>
 
+    <!-- 焦点图管理 -->
+    <view v-else-if="tab === 'banner'" class="container">
+      <view class="card">
+        <view class="field"><text class="field-label">标题 *</text><input v-model="bannerForm.title" class="input" placeholder="运营位标题" /></view>
+        <view class="field" style="align-items:flex-start;">
+          <text class="field-label">图片 *</text>
+          <view>
+            <view v-if="bannerForm.imageUrl" class="img-wrap">
+              <image :src="bannerForm.imageUrl" class="banner-preview" mode="aspectFill" @tap="chooseBannerImage" />
+              <text class="muted" style="display:block;text-align:center;" @tap="chooseBannerImage">点击更换</text>
+            </view>
+            <view v-else class="img-add" @tap="chooseBannerImage">＋ 上传图片</view>
+          </view>
+        </view>
+        <view class="field">
+          <text class="field-label">链接类型</text>
+          <picker :range="['无链接', '站内页面', '外部链接']" :value="bannerLinkTypeIndex" @change="(e) => bannerLinkTypeIndex = Number(e.detail.value)">
+            <text>{{ ['无链接', '站内页面', '外部链接'][bannerLinkTypeIndex] }}</text>
+          </picker>
+        </view>
+        <view class="field" v-if="bannerLinkTypeIndex > 0">
+          <text class="field-label">链接值 *</text>
+          <input v-model="bannerForm.linkValue" class="input" :placeholder="bannerLinkTypeIndex === 1 ? '如 /pages/market/index?tab=supply' : 'https://...'" />
+        </view>
+        <view class="field"><text class="field-label">排序</text><input v-model="bannerForm.sortOrder" class="input" type="number" placeholder="数字越小越靠前" /></view>
+        <button class="btn btn-block" @tap="saveBanner">保存焦点图</button>
+      </view>
+      <view class="section-title mt24">已配置焦点图</view>
+      <view v-if="!banners.length" class="empty">暂无焦点图</view>
+      <view v-for="b in banners" :key="b.id" class="card">
+        <view class="between">
+          <text class="card-title">{{ b.title }}</text>
+          <text class="mini danger" @tap="removeBanner(b)">删除</text>
+        </view>
+        <image :src="b.imageUrl" class="banner-preview mt8" mode="aspectFill" />
+        <view class="muted mt8">排序 {{ b.sortOrder }} · {{ bannerLinkText(b) }}</view>
+      </view>
+    </view>
+
+    <!-- 社区治理 -->
+    <view v-else-if="tab === 'post'" class="container">
+      <view v-if="!posts.length" class="empty">暂无帖子</view>
+      <view v-for="p in posts" :key="p.id" class="card">
+        <view class="between">
+          <text class="card-title">{{ p.title }}</text>
+          <text class="tag" :class="{ danger: p.status !== 'ACTIVE' }">{{ p.status === 'ACTIVE' ? '展示中' : '已隐藏' }}</text>
+        </view>
+        <view class="muted mt8">{{ p.nickname }} · {{ p.topic }} · 赞 {{ p.likeCount }} / 评 {{ p.commentCount }} · {{ fmt(p.createdAt) }}</view>
+        <view class="actions mt16">
+          <text v-if="p.status === 'ACTIVE'" class="mini danger" @tap="setPostStatus(p, 'OFF')">隐藏</text>
+          <text v-else class="mini" @tap="setPostStatus(p, 'ACTIVE')">恢复展示</text>
+        </view>
+      </view>
+      <view v-if="posts.length" class="load-more muted" @tap="loadPosts(true)">加载更多</view>
+    </view>
+
     <!-- 操作日志 -->
     <view v-else class="container">
       <view class="card search-bar">
@@ -72,7 +130,7 @@
 </template>
 
 <script>
-import { adminApi, noticeApi } from '../../api/index'
+import { adminApi, noticeApi, bannerApi, communityAdminApi, uploadImageSmart } from '../../api/index'
 import { requireLogin, getUser } from '../../utils/request'
 
 export default {
@@ -81,6 +139,8 @@ export default {
       tab: 'user',
       users: [], userKw: '',
       notices: [], noticeForm: { title: '', content: '' }, publishing: false,
+      banners: [], bannerForm: { title: '', imageUrl: '', linkValue: '', sortOrder: 0 }, bannerLinkTypeIndex: 0,
+      posts: [], postPage: 1,
       logs: [], logPage: 1, logModules: ['全部模块', 'USER', 'SUPPLY', 'DEMAND', 'ORDER', 'AUTH', 'REPORT'], logModuleIndex: 0,
     }
   },
@@ -98,7 +158,61 @@ export default {
       this.tab = t
       if (t === 'user' && !this.users.length) this.loadUsers()
       if (t === 'notice' && !this.notices.length) this.loadNotices()
+      if (t === 'banner' && !this.banners.length) this.loadBanners()
+      if (t === 'post' && !this.posts.length) { this.postPage = 1; this.posts = []; this.loadPosts() }
       if (t === 'log' && !this.logs.length) { this.logPage = 1; this.logs = []; this.loadLogs() }
+    },
+    async loadBanners() {
+      try { this.banners = (await bannerApi.list()) || [] } catch (e) { this.banners = [] }
+    },
+    async chooseBannerImage() {
+      uni.chooseImage({
+        count: 1,
+        success: async (res) => {
+          try { this.bannerForm.imageUrl = await uploadImageSmart(res.tempFilePaths[0]) } catch (e) {}
+        },
+      })
+    },
+    async saveBanner() {
+      const f = this.bannerForm
+      if (!f.title) return uni.showToast({ title: '请填写标题', icon: 'none' })
+      if (!f.imageUrl) return uni.showToast({ title: '请上传图片', icon: 'none' })
+      const linkType = ['NONE', 'PAGE', 'URL'][this.bannerLinkTypeIndex]
+      if (linkType !== 'NONE' && !f.linkValue) return uni.showToast({ title: '请填写链接值', icon: 'none' })
+      try {
+        await communityAdminApi.saveBanner({
+          title: f.title, imageUrl: f.imageUrl, linkType,
+          linkValue: linkType === 'NONE' ? null : f.linkValue,
+          sortOrder: Number(f.sortOrder) || 0, enabled: true,
+        })
+        uni.showToast({ title: '已保存' })
+        f.title = ''; f.imageUrl = ''; f.linkValue = ''; f.sortOrder = 0
+        this.bannerLinkTypeIndex = 0
+        this.loadBanners()
+      } catch (e) {}
+    },
+    async removeBanner(b) {
+      const ok = await new Promise((r) => uni.showModal({ title: '删除焦点图', content: b.title, success: (x) => r(x.confirm) }))
+      if (!ok) return
+      try { await communityAdminApi.deleteBanner(b.id); this.loadBanners() } catch (e) {}
+    },
+    bannerLinkText(b) {
+      return { NONE: '无链接', PAGE: '站内 ' + b.linkValue, URL: '外链' }[b.linkType] || b.linkType
+    },
+    async loadPosts(more) {
+      try {
+        const res = await communityAdminApi.posts({ page: more ? this.postPage + 1 : 1, pageSize: 20 })
+        const items = (res && res.items) || []
+        this.posts = more ? this.posts.concat(items) : items
+        if (items.length >= 20) this.postPage += 1
+      } catch (e) { if (!more) this.posts = [] }
+    },
+    async setPostStatus(p, status) {
+      try {
+        await communityAdminApi.setPostStatus(p.id, status)
+        p.status = status
+        uni.showToast({ title: status === 'OFF' ? '已隐藏' : '已恢复' })
+      } catch (e) {}
     },
     async loadUsers() {
       try {
@@ -180,5 +294,11 @@ export default {
 .search-bar .mini { white-space: nowrap; }
 .tag.danger { color: #dd524d; border-color: #dd524d; }
 .section-title { font-size: 30rpx; font-weight: 600; }
+.field { display: flex; align-items: center; margin-bottom: 20rpx; gap: 16rpx; }
+.field-label { font-size: 26rpx; color: #666; flex-shrink: 0; width: 130rpx; }
+.input { background: #f4f6f4; border-radius: 8rpx; padding: 16rpx 20rpx; font-size: 28rpx; flex: 1; }
+.img-add { width: 300rpx; height: 160rpx; border: 2rpx dashed #c0c8c0; border-radius: 8rpx; display: flex; align-items: center; justify-content: center; font-size: 28rpx; color: #9aa8a0; }
+.banner-preview { width: 300rpx; height: 150rpx; border-radius: 8rpx; background: #f4f6f4; }
+.btn-block { width: 100%; }
 .load-more { text-align: center; padding: 24rpx 0; }
 </style>

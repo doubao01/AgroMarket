@@ -114,6 +114,29 @@ export const noticeApi = {
   list: () => http.get('/api/notices'),
 }
 
+// 焦点图 (首页轮播)
+export const bannerApi = {
+  list: () => http.get('/api/banners'),
+}
+
+// 社区 (发帖/评论/点赞)
+export const communityApi = {
+  posts: (query) => http.get('/api/community/posts', query || {}),
+  post: (id) => http.get('/api/community/posts/' + id),
+  createPost: (data) => http.post('/api/community/posts', data, { auth: true }),
+  deletePost: (id) => http.del('/api/community/posts/' + id, {}, { auth: true }),
+  addComment: (postId, data) => http.post(`/api/community/posts/${postId}/comments`, data, { auth: true }),
+  toggleLike: (postId) => http.post(`/api/community/posts/${postId}/like`, {}, { auth: true }),
+}
+
+// 社区/焦点图管理
+export const communityAdminApi = {
+  saveBanner: (data) => http.post('/api/admin/community/banners', data, { auth: true }),
+  deleteBanner: (id) => http.del('/api/admin/community/banners/' + id, {}, { auth: true }),
+  posts: (query) => http.get('/api/admin/community/posts', query || {}, { auth: true }),
+  setPostStatus: (id, status) => http.post(`/api/admin/community/posts/${id}/status/${status}`, {}, { auth: true }),
+}
+
 export const adminApi = {
   stats: () => http.get('/api/admin/stats', {}, { auth: true }),
   users: (query) => http.get('/api/admin/users', query || {}, { auth: true }),
@@ -155,6 +178,19 @@ export const federationApi = {
   key: () => http.get('/api/admin/federation/key', {}, { auth: true }),
   generateKey: (force) => http.post('/api/admin/federation/key/generate' + (force ? '?force=true' : ''), {}, { auth: true }),
   fetchPeerKey: (id) => http.post(`/api/admin/federation/nodes/${id}/key/fetch`, {}, { auth: true }),
+}
+
+// 报警中心 (规则 / 记录 / 手动扫描)
+export const alertApi = {
+  rules: () => http.get('/api/admin/alerts/rules', {}, { auth: true }),
+  updateRule: (code, data) => http.put('/api/admin/alerts/rules/' + code, data, { auth: true }),
+  records: (query) => http.get('/api/admin/alerts/records', query || {}, { auth: true }),
+  scan: () => http.post('/api/admin/alerts/scan', {}, { auth: true }),
+}
+
+// 小程序订阅消息授权结果上报 (一次性订阅, 每次授权 +1 额度)
+export const wechatApi = {
+  subscribeReport: (templateKey, accepted) => http.post('/api/wechat/subscribe-report', { templateKey, accepted }, { auth: true }),
 }
 
 export const dashboardApi = {

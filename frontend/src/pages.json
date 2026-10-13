@@ -22,9 +22,13 @@
     { "path": "pages/user/blocks", "style": { "navigationBarTitleText": "黑名单", "enablePullDownRefresh": true } },
     { "path": "pages/address/list", "style": { "navigationBarTitleText": "收货地址" } },
     { "path": "pages/notice/index", "style": { "navigationBarTitleText": "平台公告" } },
+    { "path": "pages/community/index", "style": { "navigationBarTitleText": "热点讨论", "enablePullDownRefresh": true } },
+    { "path": "pages/community/detail", "style": { "navigationBarTitleText": "帖子详情", "enablePullDownRefresh": true } },
+    { "path": "pages/community/publish", "style": { "navigationBarTitleText": "发布帖子" } },
     { "path": "pages/admin/index", "style": { "navigationBarTitleText": "管理后台" } },
     { "path": "pages/admin/manage", "style": { "navigationBarTitleText": "后台管理" } },
     { "path": "pages/admin/federation", "style": { "navigationBarTitleText": "节点联动" } },
+    { "path": "pages/admin/alert", "style": { "navigationBarTitleText": "报警中心", "enablePullDownRefresh": true } },
     { "path": "pages/dashboard/index", "style": { "navigationBarTitleText": "数据大屏", "enablePullDownRefresh": true } },
     { "path": "pages/ai/assistant", "style": { "navigationBarTitleText": "AI 助手" } }
   ],
