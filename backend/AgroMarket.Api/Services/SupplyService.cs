@@ -58,11 +58,24 @@ public class SupplyService
         JOIN product_category c ON c.id = s.category_id
         WHERE 1=1 {0}";
 
+    // 已售数量: 该供应在已完成订单中的成交数量合计(订单明细快照 supply_id 关联)
+    private const string SoldQtySql = @"
+        SELECT oi.supply_id SupplyId, SUM(oi.quantity) SoldQty
+        FROM trade_order_item oi
+        JOIN trade_order o ON o.id = oi.order_id
+        WHERE oi.supply_id IN @ids AND o.status = 'COMPLETED'
+        GROUP BY oi.supply_id";
+
     private async Task<(string where, DynamicParameters param)> BuildWhereAsync(Dtos.SupplyQuery q)
     {
         var w = new List<string>();
         var p = new DynamicParameters();
-        if (!string.IsNullOrWhiteSpace(q.Keyword)) { w.Add("s.title LIKE @kw"); p.Add("kw", $"%{q.Keyword.Trim()}%"); }
+        if (!string.IsNullOrWhiteSpace(q.Keyword))
+        {
+            // 标题 / 描述 / 品类名 任一命中
+            w.Add("(s.title LIKE @kw OR s.description LIKE @kw OR c.name LIKE @kw)");
+            p.Add("kw", $"%{q.Keyword.Trim()}%");
+        }
         if (q.CategoryId != null) { w.Add("(s.category_id=@cat OR c.parent_id=@cat)"); p.Add("cat", q.CategoryId); }
         if (q.PriceMin != null) { w.Add("s.price >= @pmin"); p.Add("pmin", q.PriceMin); }
         if (q.PriceMax != null) { w.Add("s.price <= @pmax"); p.Add("pmax", q.PriceMax); }
@@ -107,11 +120,17 @@ public class SupplyService
         p.Add("offset", (q.Page - 1) * q.PageSize);
         var orderBy = q.OrderBy switch
         {
-            "price_asc" => "s.price ASC, s.id DESC",
-            "price_desc" => "s.price DESC, s.id DESC",
+            "price_asc" => "COALESCE(s.price, 99999999.99) ASC, s.id DESC",
+            "price_desc" => "COALESCE(s.price, 0) DESC, s.id DESC",
             "quantity" => "s.quantity DESC, s.id DESC",
             _ => "s.created_at DESC, s.id DESC",
         };
+        // 用户常驻乡镇优先置顶(软排序, 不过滤)
+        if (q.PreferTownId != null)
+        {
+            orderBy = "(s.town_id=@ptown) DESC, " + orderBy;
+            p.Add("ptown", q.PreferTownId);
+        }
         using var conn = _db.Create();
         var total = await conn.ExecuteScalarAsync<long>(string.Format(CountSql, where), p);
         var rows = (await conn.QueryAsync<SupplyRow>(string.Format(SelectSql, where, orderBy), p)).ToList();
@@ -126,6 +145,9 @@ public class SupplyService
         var imgs = (await conn.QueryAsync<(long SupplyId, long Id, string Url)>(
             "SELECT supply_id, id, url FROM product_image WHERE supply_id IN @ids ORDER BY sort_order, id",
             new { ids })).GroupBy(i => i.SupplyId).ToDictionary(g => g.Key, g => g.ToList());
+        var sold = new Dictionary<long, decimal>();
+        foreach (var g in await conn.QueryAsync<(long SupplyId, decimal SoldQty)>(SoldQtySql, new { ids }))
+            sold[g.SupplyId] = g.SoldQty;
         var result = new List<Dtos.SupplyDto>();
         foreach (var r in rows)
         {
@@ -137,7 +159,8 @@ public class SupplyService
                 r.Spec, r.HarvestTime, r.DeliveryMode,
                 // 联系方式仅发布者本人可见, 其他人通过报价流程联系
                 null, r.TradeNote, r.Status, r.CreatedAt,
-                (imgList ?? new()).Select(i => new Dtos.SupplyImageDto(i.Id, i.Url)).ToList()));
+                (imgList ?? new()).Select(i => new Dtos.SupplyImageDto(i.Id, i.Url)).ToList(),
+                sold.TryGetValue(r.Id, out var sq) ? sq : 0m));
         }
         return result;
     }
