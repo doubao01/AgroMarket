@@ -17,6 +17,7 @@ public class FedNodeRow
     public string? NodeToken { get; set; }
     public string Direction { get; set; } = "";
     public string Status { get; set; } = "";
+    public bool HasPublicKey { get; set; }
     public DateTime? LastPushAt { get; set; }
     public DateTime? LastPullAt { get; set; }
     public string? LastError { get; set; }
@@ -87,6 +88,7 @@ public class FederationRepository
 SELECT id AS Id, node_code AS NodeCode, node_name AS NodeName, node_level AS Level,
        region_code AS RegionCode, base_url AS BaseUrl, node_token AS NodeToken,
        direction AS Direction, status AS Status,
+       (public_key IS NOT NULL AND public_key <> '') AS HasPublicKey,
        last_push_at AS LastPushAt, last_pull_at AS LastPullAt, last_error AS LastError
 FROM fed_node";
 
@@ -98,11 +100,11 @@ FROM fed_node";
         return (await conn.QueryAsync<FedNodeRow>($"{NodeSelect} ORDER BY id")).ToList();
     }
 
-    public async Task<FedNodeRow?> GetNodeAsync(string nodeCode)
+    public async Task<FedNodeRow?> GetNodeByIdAsync(long id)
     {
         using var conn = _db.Create();
         return await conn.QuerySingleOrDefaultAsync<FedNodeRow>(
-            $"{NodeSelect} WHERE node_code=@nodeCode", new { nodeCode });
+            $"{NodeSelect} WHERE id=@id", new { id });
     }
 
     /// <summary>新增或更新对端节点 (按 node_code 幂等)。</summary>
@@ -270,16 +272,33 @@ FROM fed_node";
             new { source, type, from, to, limit, offset })).ToList();
     }
 
-    /// <summary>增量导出: occurred_at > since 的记录, 升序取 limit 条 (供对端游标拉取)。</summary>
-    public async Task<List<FedRecordRow>> ExportRecordsSinceAsync(DateTime since, int limit)
+    // ---------------- 多跳转发 (把已接收的下级数据再向上转发) ----------------
+
+    /// <summary>导出 [from,to] 内"非本节点来源"的按天指标 (供中间节点向上层转发)。</summary>
+    public async Task<List<FedMetricRow>> ExportForwardMetricsAsync(DateTime from, DateTime to, string selfCode)
+    {
+        using var conn = _db.Create();
+        return (await conn.QueryAsync<FedMetricRow>(
+            @"SELECT source_node_code AS SourceNodeCode, DATE_FORMAT(stat_date,'%Y-%m-%d') AS StatDate,
+                     user_count AS UserCount, active_user_count AS ActiveUserCount, new_user_count AS NewUserCount,
+                     supply_count AS SupplyCount, demand_count AS DemandCount, order_count AS OrderCount,
+                     trade_amount AS TradeAmount, message_count AS MessageCount, conversation_count AS ConversationCount
+              FROM fed_daily_metric
+              WHERE stat_date BETWEEN @from AND @to AND source_node_code <> @selfCode
+              ORDER BY stat_date",
+            new { from, to, selfCode })).ToList();
+    }
+
+    /// <summary>导出 received_at > since 的"非本节点来源"明细 (按接收时间推进, 供中间节点向上层转发)。</summary>
+    public async Task<List<FedRecordRow>> ExportForwardRecordsAsync(DateTime sinceReceived, int limit, string selfCode)
     {
         using var conn = _db.Create();
         return (await conn.QueryAsync<FedRecordRow>(
             @"SELECT id AS Id, source_node_code AS SourceNodeCode, record_type AS Type, external_id AS ExternalId,
                      region_code AS RegionCode, occurred_at AS OccurredAt, data AS Data, received_at AS ReceivedAt
-              FROM fed_business_record WHERE occurred_at > @since
-              ORDER BY occurred_at ASC LIMIT @limit",
-            new { since, limit })).ToList();
+              FROM fed_business_record WHERE received_at > @sinceReceived AND source_node_code <> @selfCode
+              ORDER BY received_at ASC LIMIT @limit",
+            new { sinceReceived, limit, selfCode })).ToList();
     }
 
     // ---------------- 汇聚 ----------------
@@ -332,5 +351,49 @@ FROM fed_node";
               VALUES (@peerNodeCode, @cursorType, @cursor)
               ON DUPLICATE KEY UPDATE last_cursor=VALUES(last_cursor)",
             new { peerNodeCode, cursorType, cursor = cursor.ToString("yyyy-MM-dd HH:mm:ss.fff") });
+    }
+
+    // ---------------- 跨实例互斥 (后台定时同步只允许一个副本执行) ----------------
+
+    /// <summary>
+    /// 非阻塞获取 MySQL 咨询锁; 获取不到返回 null (说明已有另一副本在执行同步)。
+    /// 返回的句柄持有同一连接, Dispose 时释放锁并归还连接。
+    /// </summary>
+    public async Task<FedSyncLock?> TryAcquireSyncLockAsync(string name, CancellationToken ct = default)
+    {
+        name = name.Length <= 64 ? name : name[..64];
+        var conn = _db.Create();
+        try
+        {
+            conn.Open();
+            var acquired = await conn.ExecuteScalarAsync<int?>("SELECT GET_LOCK(@name, 0)", new { name });
+            if (acquired == 1) return new FedSyncLock(conn, name);
+        }
+        catch
+        {
+            conn.Dispose();
+            throw;
+        }
+        conn.Dispose();
+        return null;
+    }
+}
+
+/// <summary>持有咨询锁的连接句柄; Dispose 时在<b>同一连接</b>上释放锁再关闭连接。</summary>
+public sealed class FedSyncLock : IDisposable
+{
+    private readonly IDbConnection _conn;
+    private readonly string _name;
+    public FedSyncLock(IDbConnection conn, string name)
+    {
+        _conn = conn;
+        _name = name;
+    }
+
+    public void Dispose()
+    {
+        try { _conn.Execute("SELECT RELEASE_LOCK(@name)", new { name = _name }); }
+        catch { /* 释放失败交由连接关闭兜底 */ }
+        _conn.Dispose();
     }
 }

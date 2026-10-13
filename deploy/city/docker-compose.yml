@@ -1,0 +1,68 @@
+# AgroMarket 市级节点（中间汇聚：接收县级上报并向省级转发）
+# 使用: 复制 .env.example 为 .env 并填写密钥 → docker compose up -d
+# 注意: 本文件在 deploy/city/ 内执行, 构建上下文为 ../../backend
+services:
+  db:
+    image: mysql:8.0
+    container_name: agromarket-db-city
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-agro_market}
+      MYSQL_USER: ${MYSQL_USER:-agromarket}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--default-authentication-plugin=mysql_native_password"]
+    volumes:
+      - db_data:/var/lib/mysql
+      - ../../database:/migrations:ro
+      - ../../database/docker-init.sh:/docker-entrypoint-initdb.d/00-migrate.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: agromarket-api-city
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Default: "Server=db;Port=3306;Database=${MYSQL_DATABASE:-agro_market};User=${MYSQL_USER:-agromarket};Password=${MYSQL_PASSWORD};DefaultCommandTimeout=30;"
+      Jwt__SecretKey: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is required (>=32 bytes)}
+      Jwt__ExpireHours: "168"
+      Sms__DevMode: "false"
+      Payment__MockEnabled: "${PAYMENT_MOCK_ENABLED:-false}"
+      CorsOrigins__0: ${CORS_ORIGIN:-http://localhost:5173}
+      # ---- 联动: 市级 = 业务节点 + 中间汇聚(接收县级并向上转发) ----
+      Federation__Enabled: "true"
+      Federation__NodeCode: ${FEDERATION_NODE_CODE:?FEDERATION_NODE_CODE is required}
+      Federation__NodeName: ${FEDERATION_NODE_NAME:-市级农贸通}
+      Federation__Level: CITY
+      Federation__RegionCode: ${FEDERATION_REGION_CODE:?FEDERATION_REGION_CODE is required}
+      # SYMMETRIC 模式必填(>=32 字节); ASYMMETRIC 模式可留空(各节点独立密钥对)
+      Federation__SharedKey: ${FEDERATION_SHARED_KEY:-}
+      Federation__TokenMode: ${FEDERATION_TOKEN_MODE:-SYMMETRIC}
+      Federation__Role: BUSINESS
+      Federation__AcceptForwarded: "true"
+      Federation__ForwardReceived: "true"
+      Federation__AutoSync: "true"
+      Federation__SyncIntervalMinutes: ${FEDERATION_SYNC_INTERVAL_MINUTES:-30}
+      Federation__BackfillDays: ${FEDERATION_BACKFILL_DAYS:-7}
+      Federation__RecordWindowHours: "24"
+      Federation__IncludeSelfInAggregate: ${FEDERATION_INCLUDE_SELF_IN_AGGREGATE:-true}
+      Federation__HealthStaleMinutes: ${FEDERATION_HEALTH_STALE_MINUTES:-0}
+    ports:
+      - "${API_PORT:-8080}:8080"
+    volumes:
+      - api_uploads:/app/uploads
+
+volumes:
+  db_data:
+  api_uploads:

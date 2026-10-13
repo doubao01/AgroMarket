@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AgroMarket.Api.Common;
 using AgroMarket.Api.Federation.Dtos;
 using AgroMarket.Api.Federation.Infrastructure;
@@ -18,17 +19,19 @@ public class FederationService
     private readonly FedHttpClient _http;
     private readonly FederationTokenService _tokens;
     private readonly FederationOptions _opt;
+    private readonly FederationSettings _settings;
     private readonly ILogger<FederationService> _logger;
 
     public FederationService(FederationRepository repo, FederationSnapshotBuilder snapshot,
         FedHttpClient http, FederationTokenService tokens, IOptions<FederationOptions> opt,
-        ILogger<FederationService> logger)
+        FederationSettings settings, ILogger<FederationService> logger)
     {
         _repo = repo;
         _snapshot = snapshot;
         _http = http;
         _tokens = tokens;
         _opt = opt.Value;
+        _settings = settings;
         _logger = logger;
     }
 
@@ -37,11 +40,21 @@ public class FederationService
     public async Task<IngestResult> IngestAsync(string sourceNodeCode, string batchNo, string periodDate,
         string? rawPayloadJson, IReadOnlyList<FedMetricDto> metrics, IReadOnlyList<FedRecordDto> records)
     {
-        var cleanMetrics = metrics.Where(m => DateOnly.TryParse(m.StatDate, out _)).ToList();
+        var cleanMetrics = metrics.Where(m => DateOnly.TryParse(m.StatDate, out _))
+            .Select(m => new FedMetricDto
+            {
+                SourceNodeCode = NormalizeSource(m.SourceNodeCode, sourceNodeCode),
+                StatDate = m.StatDate,
+                UserCount = m.UserCount, ActiveUserCount = m.ActiveUserCount, NewUserCount = m.NewUserCount,
+                SupplyCount = m.SupplyCount, DemandCount = m.DemandCount, OrderCount = m.OrderCount,
+                TradeAmount = m.TradeAmount, MessageCount = m.MessageCount, ConversationCount = m.ConversationCount,
+            })
+            .ToList();
         var cleanRecords = records
             .Where(r => FedRecordTypes.IsValid(r.Type) && !string.IsNullOrWhiteSpace(r.ExternalId))
             .Select(r => new FedRecordDto
             {
+                SourceNodeCode = NormalizeSource(r.SourceNodeCode, sourceNodeCode),
                 Type = r.Type,
                 ExternalId = Truncate(r.ExternalId, 80)!,
                 RegionCode = Truncate(r.RegionCode, 20),
@@ -50,15 +63,37 @@ public class FederationService
             })
             .ToList();
 
+        // 逐行按"原始来源"归组落库: 直接上报 → 发送方即来源; 转发 → 保留原始来源编码 (多跳 县→市→省)
+        foreach (var group in cleanMetrics.GroupBy(m => m.SourceNodeCode!))
+            await _repo.UpsertMetricsAsync(group.Key, group);
+        foreach (var group in cleanRecords.GroupBy(r => r.SourceNodeCode!))
+            await _repo.UpsertRecordsAsync(group.Key, group);
+
         var reportId = await _repo.UpsertReportAsync(sourceNodeCode, batchNo,
             string.IsNullOrWhiteSpace(periodDate) ? DateTime.Today.ToString("yyyy-MM-dd") : periodDate,
             cleanMetrics.Count, cleanRecords.Count, rawPayloadJson);
-        await _repo.UpsertMetricsAsync(sourceNodeCode, cleanMetrics);
-        await _repo.UpsertRecordsAsync(sourceNodeCode, cleanRecords);
 
-        _logger.LogInformation("联动接收 {Source} 批次 {Batch}: {Metrics} 指标 / {Records} 明细",
-            sourceNodeCode, batchNo, cleanMetrics.Count, cleanRecords.Count);
+        var forwardedSources = cleanMetrics.Select(m => m.SourceNodeCode!)
+            .Concat(cleanRecords.Select(r => r.SourceNodeCode!))
+            .Where(c => !string.Equals(c, sourceNodeCode, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        _logger.LogInformation("联动接收 {Source} 批次 {Batch}: {Metrics} 指标 / {Records} 明细 (转发来源 {Forwarded} 个)",
+            sourceNodeCode, batchNo, cleanMetrics.Count, cleanRecords.Count, forwardedSources);
         return new IngestResult(cleanMetrics.Count, cleanRecords.Count, reportId);
+    }
+
+    /// <summary>
+    /// 归一行的真实来源: 空 → 令牌身份 (发送方即来源); 与令牌身份一致 → 同一; 否则视为转发,
+    /// 仅在接收端开启 AcceptForwarded 时接受, 否则 403 (防止伪造他节点身份)。
+    /// </summary>
+    private string NormalizeSource(string? rowSource, string tokenSource)
+    {
+        if (string.IsNullOrWhiteSpace(rowSource)) return tokenSource;
+        var s = rowSource.Trim();
+        if (string.Equals(s, tokenSource, StringComparison.OrdinalIgnoreCase)) return tokenSource;
+        if (!_settings.AcceptForwarded)
+            throw new BizException("上报来源与令牌身份不一致, 且本节点未开启转发接收", ErrorCodes.Forbidden);
+        return Truncate(s, 64)!;
     }
 
     // ---------------- 推送 ----------------
@@ -71,9 +106,14 @@ public class FederationService
                         && (onlyNodeCode == null || n.NodeCode == onlyNodeCode))
             .ToList();
 
-        var metrics = await _snapshot.BuildMetricsAsync(_opt.BackfillDays);
+        var metrics = await _snapshot.BuildMetricsAsync(_settings.BackfillDays);
         var records = await _snapshot.BuildRecordsAsync(
-            DateTime.Now.AddHours(-_opt.RecordWindowHours), DateTime.Now, _opt.MaxRecordsPerPush);
+            DateTime.Now.AddHours(-_settings.RecordWindowHours), DateTime.Now, _opt.MaxRecordsPerPush);
+        if (_settings.ForwardReceived)
+        {
+            metrics = metrics.Concat(await BuildForwardMetricsAsync()).ToList();
+            records = records.Concat(await BuildForwardRecordsAsync(DateTime.Now.AddHours(-_settings.RecordWindowHours))).ToList();
+        }
 
         var result = new FedSyncResultDto { Targets = nodes.Count };
         foreach (var node in nodes)
@@ -131,17 +171,36 @@ public class FederationService
             {
                 var token = string.IsNullOrWhiteSpace(node.NodeToken) ? _tokens.IssueSelf() : node.NodeToken!;
                 var since = await _repo.GetCursorAsync(node.NodeCode, "RECORD")
-                            ?? DateTime.Now.AddDays(-_opt.BackfillDays);
-                var export = await _http.PullAsync(node.BaseUrl, token, since, _opt.MaxRecordsPerPush, ct)
-                             ?? new FedExportDto();
-                // 以对端响应中的自身节点编码为准 (而非本地登记的别名)
-                var source = string.IsNullOrWhiteSpace(export.NodeCode) ? node.NodeCode : export.NodeCode;
-                var batchNo = $"pull-{source}-{DateTime.Now:yyyyMMddHHmmss}";
-                var ingest = await IngestAsync(source, batchNo,
-                    DateTime.Today.ToString("yyyy-MM-dd"), null, export.Metrics, export.Records);
+                            ?? DateTime.Now.AddDays(-_settings.BackfillDays);
 
-                // 游标推进到本次导出生成时间 (对端已覆盖该时刻之前的数据)
-                var cursor = export.GeneratedAt == default ? DateTime.Now : export.GeneratedAt;
+                // 增量分页: 对端按 HasMore/NextSince 逐页返回, 直至取完或无法推进, 避免超限明细被静默丢弃。
+                var totalMetrics = 0;
+                var totalRecords = 0;
+                var page = 0;
+                var cursor = DateTime.Now;
+                while (true)
+                {
+                    var export = await _http.PullAsync(node.BaseUrl, token, since, _opt.MaxRecordsPerPush, ct)
+                                 ?? new FedExportDto();
+                    // 以对端响应中的自身节点编码为准 (而非本地登记的别名)
+                    var source = string.IsNullOrWhiteSpace(export.NodeCode) ? node.NodeCode : export.NodeCode;
+                    var batchNo = Truncate($"pull-{source}-{DateTime.Now:yyyyMMddHHmmssfff}-{page}", 64)!;
+                    var ingest = await IngestAsync(source, batchNo,
+                        DateTime.Today.ToString("yyyy-MM-dd"), null, export.Metrics, export.Records);
+                    totalMetrics += ingest.MetricCount;
+                    totalRecords += ingest.RecordCount;
+                    page++;
+
+                    var next = export.NextSince;
+                    if (!export.HasMore || !next.HasValue || next.Value <= since || page >= 100)
+                    {
+                        // 取完 / 无更多 / 无法推进游标 / 页数上限: 游标推进到本次导出时刻
+                        cursor = export.GeneratedAt == default ? DateTime.Now : export.GeneratedAt;
+                        break;
+                    }
+                    since = next.Value;
+                }
+
                 await _repo.SetCursorAsync(node.NodeCode, "RECORD", cursor);
                 await _repo.TouchNodeSyncAsync(node.Id, push: false, null);
 
@@ -149,7 +208,7 @@ public class FederationService
                 result.Details.Add(new FedSyncTargetResultDto
                 {
                     NodeCode = node.NodeCode, Direction = FedDirections.Pull, Ok = true,
-                    MetricCount = ingest.MetricCount, RecordCount = ingest.RecordCount,
+                    MetricCount = totalMetrics, RecordCount = totalRecords,
                 });
             }
             catch (Exception ex)
@@ -167,17 +226,27 @@ public class FederationService
         return result;
     }
 
-    /// <summary>供对端拉取: 生成本节点增量导出载荷。</summary>
+    /// <summary>供对端拉取: 生成本节点增量导出载荷 (明细按 occurred_at 升序, 供游标分页)。</summary>
     public async Task<FedExportDto> ExportAsync(DateTime since, int limit)
     {
         if (limit <= 0 || limit > 2000) limit = _opt.MaxRecordsPerPush;
-        var metrics = await _snapshot.BuildMetricsAsync(_opt.BackfillDays);
-        var records = await _snapshot.BuildRecordsAsync(since, DateTime.Now, limit);
+        var metrics = await _snapshot.BuildMetricsAsync(_settings.BackfillDays);
+        var local = await _snapshot.BuildRecordsAsync(since, DateTime.Now, limit, oldestFirst: true);
+        var records = local;
+        var hasMore = local.Count >= limit;
+        if (_settings.ForwardReceived)
+        {
+            metrics = metrics.Concat(await BuildForwardMetricsAsync()).ToList();
+            var fwd = await BuildForwardRecordsAsync(since);
+            records = records.Concat(fwd).ToList();
+            if (fwd.Count >= _opt.MaxRecordsPerPush) hasMore = true;
+        }
         return new FedExportDto
         {
             NodeCode = _opt.NodeCode,
             GeneratedAt = DateTime.Now,
-            HasMore = records.Count >= limit,
+            HasMore = hasMore,
+            NextSince = local.Count > 0 ? local.Max(r => r.OccurredAt) : null,
             Metrics = metrics,
             Records = records,
         };
@@ -185,4 +254,52 @@ public class FederationService
 
     private static string? Truncate(string? s, int len) =>
         string.IsNullOrEmpty(s) ? s : (s.Length <= len ? s : s[..len]);
+
+    // ---------------- 多跳转发构建 (把已接收的下级数据再向上层附带) ----------------
+
+    /// <summary>把已接收的非本节点指标 (BackfillDays 窗口内) 转成带原始来源的载荷。</summary>
+    private async Task<List<FedMetricDto>> BuildForwardMetricsAsync()
+    {
+        var to = DateTime.Today;
+        var from = to.AddDays(-(_settings.BackfillDays - 1));
+        var rows = await _repo.ExportForwardMetricsAsync(from, to, _opt.NodeCode);
+        return rows.Select(r => new FedMetricDto
+        {
+            SourceNodeCode = r.SourceNodeCode,
+            StatDate = r.StatDate,
+            UserCount = r.UserCount, ActiveUserCount = r.ActiveUserCount, NewUserCount = r.NewUserCount,
+            SupplyCount = r.SupplyCount, DemandCount = r.DemandCount, OrderCount = r.OrderCount,
+            TradeAmount = r.TradeAmount, MessageCount = r.MessageCount, ConversationCount = r.ConversationCount,
+        }).ToList();
+    }
+
+    /// <summary>把在 sinceReceived 之后收到、且非本节点来源的明细转成带原始来源的载荷。</summary>
+    private async Task<List<FedRecordDto>> BuildForwardRecordsAsync(DateTime sinceReceived)
+    {
+        var rows = await _repo.ExportForwardRecordsAsync(sinceReceived, _opt.MaxRecordsPerPush, _opt.NodeCode);
+        return rows.Select(ToRecordDto).ToList();
+    }
+
+    private static FedRecordDto ToRecordDto(FedRecordRow r) => new()
+    {
+        SourceNodeCode = r.SourceNodeCode,
+        Type = r.Type,
+        ExternalId = r.ExternalId,
+        RegionCode = r.RegionCode,
+        OccurredAt = r.OccurredAt,
+        Data = ParseData(r.Data),
+    };
+
+    private static JsonElement ParseData(string? json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            return doc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return JsonDocument.Parse("{}").RootElement.Clone();
+        }
+    }
 }

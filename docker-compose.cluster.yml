@@ -1,8 +1,9 @@
 # =====================================================================
 # AgroMarket 多级（省/市/县）节点集群编排
-#   - 每个节点 = 一套独立 { MySQL + API }，彼此对等（扁平拓扑）
-#   - 节点间通过 Docker 网络内服务名互访（api-henan / api-xixian / ...）
-#   - 首启自动按序执行 database/0*.sql 全部迁移（含 07_federation）
+#   - 每个节点 = 一套独立 { MySQL + API }，扁平对等 + 可选多跳转发
+#   - 默认: 1 省级 + 1 市级 + 2 县级；市级开启转发(县→市→省 多跳)
+#   - 节点间通过 Docker 网络内服务名互访（api-henan / api-zhoukou / api-xixian / ...）
+#   - 首启自动按序执行 database/0*.sql 全部迁移（含 07/08/09 federation）
 #   - federation-bootstrap 一次性完成"互相登记对端 + 令牌就绪 + 首次同步"
 #
 # 用法:
@@ -36,14 +37,16 @@ x-api-env: &api-env
   Jwt__ExpireHours: "168"
   Sms__DevMode: "false"
   Payment__MockEnabled: "false"
-  # ---- 联动公共配置: SharedKey 必须所有节点一致 ----
+  # ---- 联动公共配置: SYMMETRIC 模式 SharedKey 须全网一致; ASYMMETRIC 模式可留空 ----
   Federation__Enabled: "true"
-  Federation__SharedKey: ${FEDERATION_SHARED_KEY:?FEDERATION_SHARED_KEY is required (>=32 bytes)}
+  Federation__SharedKey: ${FEDERATION_SHARED_KEY:-}
+  Federation__TokenMode: "${FEDERATION_TOKEN_MODE:-SYMMETRIC}"
   Federation__AutoSync: "true"
   Federation__SyncIntervalMinutes: "${FEDERATION_SYNC_INTERVAL_MINUTES:-30}"
-  Federation__BackfillDays: "1"
+  Federation__BackfillDays: "${FEDERATION_BACKFILL_DAYS:-7}"
   Federation__RecordWindowHours: "24"
   Federation__IncludeSelfInAggregate: "${FEDERATION_INCLUDE_SELF_IN_AGGREGATE:-true}"
+  Federation__HealthStaleMinutes: "${FEDERATION_HEALTH_STALE_MINUTES:-0}"
   CorsOrigins__0: ${CORS_ORIGIN:-http://localhost:5173}
 
 x-api-common: &api-common
@@ -80,6 +83,9 @@ services:
       Federation__NodeName: 河南省农贸通
       Federation__Level: PROVINCE
       Federation__RegionCode: "410000"
+      Federation__Role: AGGREGATOR
+      Federation__AcceptForwarded: "true"
+      Federation__ForwardReceived: "false"
     ports:
       - "${API_PORT_HENAN:-8080}:8080"
     volumes:
@@ -112,10 +118,49 @@ services:
       Federation__NodeName: 息县农贸通
       Federation__Level: COUNTY
       Federation__RegionCode: "411528"
+      Federation__Role: BUSINESS
+      Federation__AcceptForwarded: "false"
+      Federation__ForwardReceived: "false"
     ports:
       - "${API_PORT_XIXIAN:-8081}:8080"
     volumes:
       - api_uploads_xixian:/app/uploads
+
+  # ================= 周口市节点 (中间汇聚: 接收县级并向上转发) =================
+  db-zhoukou:
+    <<: *db-common
+    container_name: agromarket-db-zhoukou
+    volumes:
+      - db_zhoukou:/var/lib/mysql
+      - ./database:/migrations:ro
+      - ./database/docker-init.sh:/docker-entrypoint-initdb.d/00-migrate.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  api-zhoukou:
+    <<: *api-common
+    container_name: agromarket-api-zhoukou
+    depends_on:
+      db-zhoukou:
+        condition: service_healthy
+    environment:
+      <<: *api-env
+      ConnectionStrings__Default: "Server=db-zhoukou;Port=3306;Database=agro_market;User=${MYSQL_USER:-agromarket};Password=${MYSQL_PASSWORD};DefaultCommandTimeout=30;"
+      Federation__NodeCode: node-zhoukou
+      Federation__NodeName: 周口市农贸通
+      Federation__Level: CITY
+      Federation__RegionCode: "411600"
+      # 中间节点: 接收县级的转发数据并再向省级转发 (多跳 县→市→省)
+      Federation__Role: BUSINESS
+      Federation__AcceptForwarded: "true"
+      Federation__ForwardReceived: "true"
+    ports:
+      - "${API_PORT_ZHOUKOU:-8083}:8080"
+    volumes:
+      - api_uploads_zhoukou:/app/uploads
 
   # ================= 淮阳县节点 =================
   db-huaiyang:
@@ -144,6 +189,9 @@ services:
       Federation__NodeName: 淮阳县农贸通
       Federation__Level: COUNTY
       Federation__RegionCode: "411626"
+      Federation__Role: BUSINESS
+      Federation__AcceptForwarded: "false"
+      Federation__ForwardReceived: "false"
     ports:
       - "${API_PORT_HUAIYANG:-8082}:8080"
     volumes:
@@ -156,11 +204,12 @@ services:
     container_name: agromarket-fed-bootstrap
     depends_on:
       - api-henan
+      - api-zhoukou
       - api-xixian
       - api-huaiyang
     environment:
       # 格式: nodeCode|baseUrl(网内)|level|name|regionCode，用 ; 分隔；baseUrl 必须是对端可达的地址
-      FED_ALL: "node-henan|http://api-henan:8080|PROVINCE|河南省农贸通|410000;node-xixian|http://api-xixian:8080|COUNTY|息县农贸通|411528;node-huaiyang|http://api-huaiyang:8080|COUNTY|淮阳县农贸通|411626"
+      FED_ALL: "node-henan|http://api-henan:8080|PROVINCE|河南省农贸通|410000;node-zhoukou|http://api-zhoukou:8080|CITY|周口市农贸通|411600;node-xixian|http://api-xixian:8080|COUNTY|息县农贸通|411528;node-huaiyang|http://api-huaiyang:8080|COUNTY|淮阳县农贸通|411626"
       FED_ADMIN_PHONE: "13800000001"
       FED_ADMIN_PASSWORD: "Abc123456"
       FED_SYNC_ON_BOOTSTRAP: "true"
@@ -171,8 +220,10 @@ services:
 
 volumes:
   db_henan:
+  db_zhoukou:
   db_xixian:
   db_huaiyang:
   api_uploads_henan:
+  api_uploads_zhoukou:
   api_uploads_xixian:
   api_uploads_huaiyang:

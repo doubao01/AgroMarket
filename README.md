@@ -8,7 +8,7 @@
 |----|------|
 | 前端 | uni-app（Vue 3 + Vite），一套代码编译为 **H5** 与 **微信小程序** |
 | 后端 | .NET 10 / ASP.NET Core Web API，Dapper + MySqlConnector |
-| 数据库 | MySQL 8（开发环境以 MariaDB 10.11 兼容运行） |
+| 数据库 | MySQL 8 / MariaDB 10.11+（迁移 SQL 兼容两者；开发环境以 MariaDB 10.11 运行） |
 | 鉴权 | 无状态 JWT（自定义轻量 Handler + 授权过滤器） |
 
 ## 目录结构
@@ -29,6 +29,7 @@
 ├── scripts/                  # 多节点联动引导/演示脚本
 │   ├── federation-bootstrap.sh
 │   └── federation-demo.sh
+├── deploy/                   # 省 / 市 / 县三套单节点交付物（compose + env + README）
 ├── docker-compose.yml        # 单节点部署（MySQL + API）
 └── docker-compose.cluster.yml # 多级节点集群部署（省/市/县）
 ```
@@ -39,7 +40,7 @@
 
 ```bash
 cd database
-# 创建库、账号、执行结构(01)、种子数据(02)、聊天模块(03)、聊天增强(04)、AI 对话(05)、聊天维护(06)与节点联动(07)迁移（可重复执行）
+# 创建库、账号，并按序执行 01 结构 / 02 种子 / 03 聊天 / 04 聊天增强 / 05 AI 对话 / 06 聊天维护 / 07 联动 / 08 非对称密钥 / 09 运行时设置 迁移（可重复执行）
 bash init-db.sh
 ```
 
@@ -167,14 +168,17 @@ dotnet run --project AgroMarket.Tests
 面向"多个县域 + 省级"扁平节点，提供业务数据上报与双向同步能力（管理员后台 `pages/admin/federation.vue`，后端 `AgroMarket.Api/Federation/`）。
 
 - **拓扑**：扁平多节点（省/市/县对等），各节点通过 `appsettings` 的 `Federation:*` 配置自身身份，在后台登记对端。
-- **鉴权**：节点间用 JWT 节点令牌（`Federation:SharedKey` HS256 签发，`issuer/audience=AgroMarketFederation`，与用户登录 JWT 隔离）。请求头 `Authorization: Bearer <token>` 或 `X-Node-Token`。
+- **鉴权**：节点间用 JWT 节点令牌，支持双模式——`SYMMETRIC`（`Federation:SharedKey` HS256 共享密钥，默认）与 `ASYMMETRIC`（RS256 每节点密钥对，对端仅存公钥，单点泄露不可伪造全网令牌）。`issuer/audience=AgroMarketFederation`，与用户登录 JWT 隔离。请求头 `Authorization: Bearer <token>` 或 `X-Node-Token`。
 - **上报内容**：按天汇总指标（用户/供需/订单/成交额/消息）+ 脱敏业务明细（供应/需求/真实成交订单）。真实成交口径与数据大屏一致；明细不含手机号等身份信息（`PiiMasker` 脱敏，订单买卖双方为不可逆假名）。
-- **同步方式**：手动（后台"立即推送/拉取"）或定时（`Federation:AutoSync` + `SyncIntervalMinutes`，后台 `FederationSyncWorker`）。推送/拉取均幂等（指标按 `来源+日期`、明细按 `来源+类型+外部ID`、批次按 `来源+批次号`）。
-- **接口**：节点间 `api/federation/node/{ping,reports,export}`；管理端 `api/admin/federation/{self,nodes,nodes/token,reports,metrics,records,aggregate,sync/push,sync/pull}`（仅管理员）。
-- **配置**：`Federation:Enabled` 开启后必须配置 `NodeCode`/`NodeName`/`SharedKey`（≥32 字节）；未配置时节点接口不可用，不影响其它业务。
-- **界面**：管理后台"联动"页对端节点按省 / 市 / 县分组展示；`aggregate` 默认纳入本节点，形成"本节点 + 对端"全景汇聚（可用 `Federation:IncludeSelfInAggregate=false` 关闭，仅汇总已接收的对端数据）。
-- **省/市视角**：`aggregate?regionPrefix=` 可按区划码前缀过滤来源节点（省=前 2 位如 `41`，市=前 4 位如 `4101`），映射来自已登记对端的 `region_code` 与本节点 `RegionCode`；不改数据模型（扁平拓扑，无父子 rollup）。
-- **部署**：多级（省/市/县）节点集群见 `docker-compose.cluster.yml`，每节点一套独立 MySQL + API，`federation-bootstrap` 一次性完成"互相登记对端 + 首轮同步"。本机两实例快速演示：`sh scripts/federation-demo.sh`。
+- **同步方式**：手动（后台"立即推送/拉取"）或定时（`Federation:AutoSync` + `SyncIntervalMinutes`，后台 `FederationSyncWorker`；跨副本用 MySQL 咨询锁互斥 + 启动错峰/周期抖动）。推送/拉取均幂等（指标按 `来源+日期`、明细按 `来源+类型+外部ID`、批次按 `来源+批次号`）。
+- **汇聚上收（多跳）**：可选开启中间节点转发（`Federation:ForwardReceived`）与汇聚端接收（`AcceptForwarded`），实现 `县→市→省` 多跳；载荷携带原始来源 `sourceNodeCode`，接收端按**原始来源**落库去重，直报与转发不会双计。
+- **只读汇聚节点**：`Federation:Role=AGGREGATOR` 时该节点禁业务写接口（放行登录与联动管理），仅用于汇聚/中转。
+- **接口**：节点间 `api/federation/node/{ping,reports,export,key}`；管理端 `api/admin/federation/{self,nodes,nodes/token,reports,metrics,records,aggregate,health,settings,sync/push,sync/pull,key,key/generate,nodes/{id}/key/fetch}`（仅管理员）。
+- **配置**：`Federation:Enabled` 开启后必须配置 `NodeCode`/`NodeName`（`SYMMETRIC` 下 `SharedKey` ≥32 字节），且 `TokenMode`/`Role` 取值合法；未配置时节点接口不可用，不影响其它业务。
+- **运行时可调**：`AutoSync`/`SyncIntervalMinutes`/`BackfillDays`（默认 7）/`RecordWindowHours`/`IncludeSelfInAggregate`/`ForwardReceived`/`AcceptForwarded`/`HealthStaleMinutes`/`NodeName`/`RegionCode` 可在后台「联动 → 设置」热改（持久化 `fed_setting`）。
+- **界面**：管理后台"联动"页对端节点按省 / 市 / 县分组展示，并含"设置"Tab（同步健康 + 运行设置 + 密钥管理）；`aggregate` 默认纳入本节点，形成"本节点 + 对端"全景汇聚（可用 `IncludeSelfInAggregate=false` 关闭）。
+- **省/市视角**：`aggregate?regionPrefix=` 可按区划码前缀过滤来源节点（省=前 2 位如 `41`，市=前 4 位如 `4101`）；健康总览 `GET api/admin/federation/health` 查看各对端 `healthy/stale/lastError`。
+- **部署**：开箱即用的**省 / 市 / 县三套单节点交付物**见 `deploy/`；三级一体编排见 `docker-compose.cluster.yml`（1 省 + 1 市 + 2 县），`federation-bootstrap` 一次性完成"互相登记对端 + 首轮同步"。本机两实例快速演示：`sh scripts/federation-demo.sh`。
 - 设计文档：`当前工作区/.monkeycode/docs/federation-design.md`；部署手册：`当前工作区/.monkeycode/docs/federation-deploy.md`。
 
 ## 重要说明
@@ -204,7 +208,9 @@ docker compose -f docker-compose.cluster.yml --env-file .env.cluster logs -f fed
 ```
 
 - `FEDERATION_SHARED_KEY` 必须**所有节点一致**（≥32 字节）；每节点 `Federation__NodeCode/NodeName/Level/RegionCode` 各不相同。
-- 数据库首启自动按序执行 `01`–`07` 全部迁移（含联动表）。
+- 生产建议 `FEDERATION_TOKEN_MODE=ASYMMETRIC`、省级 `Federation__Role=AGGREGATOR`、`FEDERATION_BACKFILL_DAYS=7`。
+- 数据库首启自动按序执行 `01`–`09` 全部迁移（含联动表 / 密钥表 / 运行设置表）。
+- **开箱即用的单节点交付物**：`deploy/province`（省）、`deploy/city`（市）、`deploy/county`（县），各自 `cp .env.example .env && docker compose up -d --build`。
 - 完整流程、扩容与排障见 `当前工作区/.monkeycode/docs/federation-deploy.md`。
 
 ## 文档索引

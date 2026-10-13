@@ -10,7 +10,10 @@ USE agro_market;
 INSERT IGNORE INTO sys_region (id, region_code, parent_id, region_name, region_level, sort_order) VALUES
 (1,  '410000', NULL, '河南省', 1, 1),
 (2,  '411500', 1,    '信阳市', 2, 1),
-(3,  '411528', 2,    '息县',   3, 1);
+(3,  '411528', 2,    '息县',   3, 1),
+-- 多级联动集群演示所需 (docker-compose.cluster.yml): 周口市 / 淮阳县
+(4,  '411600', 1,    '周口市', 2, 2),
+(5,  '411626', 4,    '淮阳县', 3, 1);
 
 -- ---------- 息县 乡镇/街道 (4街道 6镇 12乡) ----------
 INSERT IGNORE INTO sys_region (id, region_code, parent_id, region_name, region_level, sort_order) VALUES
