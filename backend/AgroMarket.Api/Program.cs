@@ -24,10 +24,14 @@ if (!builder.Environment.IsDevelopment()
     && string.IsNullOrWhiteSpace(builder.Configuration["Ai:ApiKey"]))
     throw new InvalidOperationException("Ai:ApiKey is required when Ai:Enabled is true outside Development.");
 
-// 联动配置校验: 一旦启用, 身份与共享密钥必须齐备
+// 联动配置校验: 一旦启用, 身份与共享密钥(或非对称密钥对模式)必须齐备
 var fedOptions = builder.Configuration.GetSection(FederationOptions.SectionName).Get<FederationOptions>() ?? new FederationOptions();
+if (!TokenModes.IsValid(fedOptions.TokenMode))
+    throw new InvalidOperationException("Federation:TokenMode 只能是 SYMMETRIC/ASYMMETRIC。");
+if (!FedRoles.IsValid(fedOptions.Role))
+    throw new InvalidOperationException("Federation:Role 只能是 BUSINESS/AGGREGATOR。");
 if (fedOptions.Enabled && !fedOptions.HasIdentity)
-    throw new InvalidOperationException("Federation:Enabled 为 true 时必须配置 Federation:NodeCode/NodeName 与 Federation:SharedKey(>=32 字节)。");
+    throw new InvalidOperationException("Federation:Enabled 为 true 时必须配置 Federation:NodeCode/NodeName 及 Federation:SharedKey(>=32 字节, SYMMETRIC 模式) 或 Federation:TokenMode=ASYMMETRIC。");
 
 // Services
 builder.Services.AddSingleton<IDbConnectionFactory, MySqlConnectionFactory>();
@@ -76,6 +80,8 @@ builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiInsightService>();
 // 节点联动 (多节点数据上报 / 同步): 未配置 SharedKey 时节点接口返回 401/400, 不影响业务
 builder.Services.Configure<FederationOptions>(builder.Configuration.GetSection(FederationOptions.SectionName));
 builder.Services.AddSingleton<FederationTokenService>();
+builder.Services.AddSingleton<FederationKeyStore>();
+builder.Services.AddSingleton<FederationSettings>();
 builder.Services.AddScoped<FederationRepository>();
 builder.Services.AddScoped<FederationSnapshotBuilder>();
 builder.Services.AddScoped<FederationService>();
@@ -162,6 +168,7 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 app.UseCors("web");
 app.UseWebSockets();
 app.UseMiddleware<BizExceptionMiddleware>();
+app.UseMiddleware<AgroMarket.Api.Federation.Api.AggregatorReadOnlyMiddleware>();
 app.UseStatusCodePages(async context =>
 {
     var response = context.HttpContext.Response;

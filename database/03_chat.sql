@@ -1,7 +1,7 @@
 -- =====================================================================
 -- AgroMarket 站内聊天模块 - 结构迁移 (03)
 -- MySQL 8 / MariaDB 10.11 兼容, utf8mb4
--- 可重复执行: CREATE 使用 IF NOT EXISTS; ALTER 使用 IF NOT EXISTS(MariaDB)
+-- 可重复执行: CREATE 使用 IF NOT EXISTS; 追加列/索引用 information_schema 判定的动态 ALTER (兼容 MySQL 8 与 MariaDB)
 -- 说明: 面向已有库的增量迁移。全新安装同样会执行本脚本。
 -- =====================================================================
 
@@ -89,15 +89,16 @@ CREATE TABLE IF NOT EXISTS chat_block (
 
 -- ---------------------------------------------------------------
 -- 扩展 trade_quote: 挂接会话与结构化交付条件 (ADR-2)
--- MariaDB 支持 ADD COLUMN IF NOT EXISTS; 全新库 01_schema 已含这些列时此处幂等跳过
+-- MySQL 8 与 MariaDB 的 IF NOT EXISTS 语法不通用, 用 information_schema 判定后动态 ALTER (幂等)
 -- ---------------------------------------------------------------
-ALTER TABLE trade_quote
-  ADD COLUMN IF NOT EXISTS conversation_id   BIGINT UNSIGNED NULL COMMENT '来源会话',
-  ADD COLUMN IF NOT EXISTS message_id        BIGINT UNSIGNED NULL COMMENT '来源聊天消息',
-  ADD COLUMN IF NOT EXISTS delivery_address  VARCHAR(300)    NULL COMMENT '交货地点',
-  ADD COLUMN IF NOT EXISTS deliver_by        DATE            NULL COMMENT '期望交货日期',
-  ADD COLUMN IF NOT EXISTS freight_bearer    VARCHAR(20)     NULL COMMENT '运费承担: BUYER/SELLER',
-  ADD COLUMN IF NOT EXISTS valid_until       DATETIME(3)     NULL COMMENT '报价有效期';
+SET @c := (SELECT COUNT(*) FROM information_schema.columns
+           WHERE table_schema=DATABASE() AND table_name='trade_quote' AND column_name='conversation_id');
+SET @s := IF(@c=0,
+  'ALTER TABLE trade_quote ADD COLUMN conversation_id BIGINT UNSIGNED NULL COMMENT ''来源会话'', ADD COLUMN message_id BIGINT UNSIGNED NULL COMMENT ''来源聊天消息'', ADD COLUMN delivery_address VARCHAR(300) NULL COMMENT ''交货地点'', ADD COLUMN deliver_by DATE NULL COMMENT ''期望交货日期'', ADD COLUMN freight_bearer VARCHAR(20) NULL COMMENT ''运费承担: BUYER/SELLER'', ADD COLUMN valid_until DATETIME(3) NULL COMMENT ''报价有效期''',
+  'DO 0');
+PREPARE _st FROM @s; EXECUTE _st; DEALLOCATE PREPARE _st;
 
-ALTER TABLE trade_quote
-  ADD KEY IF NOT EXISTS idx_tq_conv (conversation_id);
+SET @c := (SELECT COUNT(*) FROM information_schema.statistics
+           WHERE table_schema=DATABASE() AND table_name='trade_quote' AND index_name='idx_tq_conv');
+SET @s := IF(@c=0, 'ALTER TABLE trade_quote ADD KEY idx_tq_conv (conversation_id)', 'DO 0');
+PREPARE _st FROM @s; EXECUTE _st; DEALLOCATE PREPARE _st;

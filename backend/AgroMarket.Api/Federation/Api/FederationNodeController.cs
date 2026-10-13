@@ -28,8 +28,8 @@ public class FederationNodeController : ControllerBase
     public async Task<ActionResult<ApiResponse<object>>> Receive([FromBody] FedReportPayload payload)
     {
         var me = HttpContext.Node();
-        if (!string.IsNullOrWhiteSpace(payload.NodeCode) &&
-            !string.Equals(payload.NodeCode, me.NodeCode, StringComparison.OrdinalIgnoreCase))
+        // 发送方身份必须与令牌一致 (转发数据由逐行的 sourceNodeCode 表达原始来源, 见 NormalizeSource)
+        if (!string.Equals(payload.NodeCode, me.NodeCode, StringComparison.OrdinalIgnoreCase))
             throw new BizException("上报节点与令牌身份不一致", ErrorCodes.Forbidden);
 
         var raw = System.Text.Json.JsonSerializer.Serialize(payload);

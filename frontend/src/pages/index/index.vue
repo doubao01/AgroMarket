@@ -89,6 +89,7 @@
     <region-picker
       v-model:visible="showRegion"
       allow-all
+      close-on-town-select
       v-model:townId="townId"
       v-model:villageId="villageId"
       @town-change="onTownChange"
@@ -109,7 +110,7 @@ export default {
       supplies: [], demands: [], notices: [],
       loadingSupplies: false, loadingDemands: false,
       showRegion: false,
-      townId: null, villageId: null, townLabel: '全部乡镇',
+      townId: null, villageId: null, villageName: '', townLabel: '全部乡镇',
     }
   },
   onShow() { this.syncLocation(); this.load() },
@@ -118,19 +119,22 @@ export default {
       const loc = getLocation()
       this.townId = loc ? loc.townId : null
       this.villageId = loc ? (loc.villageId || null) : null
+      this.villageName = loc ? (loc.villageName || '') : ''
       this.townLabel = getTownLabel(loc)
     },
     onTownChange(e) {
       this.townLabel = e.townName || '全部乡镇'
       this.villageId = null
+      this.villageName = ''
       this.persist()
     },
     onVillageChange(e) {
       this.villageId = e.villageId || null
+      this.villageName = e.villageName || ''
       this.persist()
     },
     persist() {
-      setLocation({ countyId: 3, townId: this.townId, townName: this.townLabel === '全部乡镇' ? '' : this.townLabel, villageId: this.villageId, villageName: '' })
+      setLocation({ countyId: 3, townId: this.townId, townName: this.townLabel === '全部乡镇' ? '' : this.townLabel, villageId: this.villageId, villageName: this.villageName })
       this.load()
     },
     listQuery(page, pageSize) {

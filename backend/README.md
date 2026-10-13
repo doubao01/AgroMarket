@@ -73,15 +73,20 @@ cd backend && dotnet run --project AgroMarket.Api
 | `Storage:ChunkSizeKb` | 分片上传分片大小 KB（默认 1024） |
 | `Federation:Enabled` | 是否启用多节点联动（启用时必须配置下方身份与密钥） |
 | `Federation:NodeCode` / `NodeName` / `Level` / `RegionCode` | 本节点身份（`Level`∈PROVINCE/CITY/COUNTY） |
-| `Federation:SharedKey` | 节点令牌签名密钥（HS256，**≥32 字节**，全联邦共享） |
-| `Federation:AutoSync` / `SyncIntervalMinutes` | 定时同步开关与周期（分钟） |
-| `Federation:BackfillDays` / `RecordWindowHours` / `MaxRecordsPerPush` / `TokenDays` | 上报回补天数 / 明细时间窗 / 单批明细上限 / 令牌有效期 |
+| `Federation:SharedKey` | 节点令牌签名密钥（HS256，`SYMMETRIC` 模式下 **≥32 字节**，全联邦共享） |
+| `Federation:TokenMode` | 令牌签名模式：`SYMMETRIC`(默认, HS256) / `ASYMMETRIC`(RS256 每节点密钥对) |
+| `Federation:Role` | 节点角色：`BUSINESS`(默认, 业务读写) / `AGGREGATOR`(汇聚只读, 禁业务写) |
+| `Federation:ForwardReceived` | 是否把已接收的下级数据向上级转发（多跳 县→市→省，仅中间节点开启） |
+| `Federation:AcceptForwarded` | 是否接收"非直接对端来源"的转发数据（仅上级/汇聚节点开启；关闭时来源不一致 403） |
+| `Federation:AutoSync` / `SyncIntervalMinutes` | 定时同步开关与周期（分钟）；worker 单实例用 MySQL 咨询锁互斥，另有启动错峰 + 周期抖动 |
+| `Federation:BackfillDays` / `RecordWindowHours` / `MaxRecordsPerPush` / `TokenDays` | 上报回补天数（默认 7）/ 明细时间窗 / 单批明细上限 / 令牌有效期 |
 | `Federation:IncludeSelfInAggregate` | 跨节点汇聚是否纳入本节点（默认 `true`，形成"本节点+对端"全景） |
+| `Federation:HealthStaleMinutes` | 对端同步"过期"判定阈值（分钟）；`0` 自动取 `max(2×间隔, 60)` |
 | `CorsOrigins` | 允许的前端来源 |
 
 环境变量使用双下划线映射，例如 `Jwt__SecretKey`、`ConnectionStrings__Default`。
 
-启动时会做安全校验：非开发环境若 JWT 密钥为空/过短/以 `dev-` 开头、连接串为空、开启短信开发模式、或开启模拟支付，将拒绝启动。
+启动时会做安全校验：非开发环境若 JWT 密钥为空/过短/以 `dev-` 开头、连接串为空、开启短信开发模式、或开启模拟支付，将拒绝启动。开启 `Federation:Enabled` 时还会校验节点身份齐备、`TokenMode`/`Role` 取值合法，否则拒绝启动。
 
 ## 支付渠道
 
@@ -179,12 +184,15 @@ AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡
 
 面向"多个县域 + 省级"的扁平多节点，提供业务数据上报与双向同步。模块位于 `Federation/`。
 
-- **节点身份**：`FederationTokenService` 用 `Federation:SharedKey`（HS256）签发/校验节点 JWT（`issuer/audience=AgroMarketFederation`），claims 含 `node_code/node_name/node_level/region_code`，与用户登录 JWT 隔离。`[RequireNode]` + `RequireNodeFilter`（全局注册）从 `Authorization: Bearer` 或 `X-Node-Token` 解析节点身份。
+- **节点身份**：`FederationTokenService` 双模式签发/校验节点 JWT（`issuer/audience=AgroMarketFederation`），claims 含 `node_code/node_name/node_level/region_code`，与用户登录 JWT 隔离。`SYMMETRIC` 用 `Federation:SharedKey`(HS256)，`ASYMMETRIC` 用每节点 RSA 密钥对(RS256，`FederationKeyStore` + `fed_keypair`/`fed_node.public_key`，对端公钥经 `api/federation/node/key` 分发)。校验端按令牌头 `alg` 自动选密钥；未登记公钥的 RS256 令牌一律拒绝。`[RequireNode]` + `RequireNodeFilter`（全局注册）从 `Authorization: Bearer` 或 `X-Node-Token` 解析节点身份。
 - **数据内容**：`FederationSnapshotBuilder` 生成本节点"按天汇总指标 + 脱敏业务明细"。指标口径复用 `DashboardService.RealOrderWhere`（真实成交）；明细仅结构化业务字段，自由文本经 `PiiMasker`（去手机号/身份证/邮箱），订单买卖双方为不可逆假名 `ref_xxx`。
-- **同步**：`FederationService` 负责推送/拉取/导出/接收；`FederationSyncWorker` 按 `Federation:SyncIntervalMinutes` 定时执行（`AutoSync` 控制）。对端未配置 `node_token` 时自动使用本节点令牌。全部写入幂等：指标 `来源+日期`、明细 `来源+类型+外部ID`、批次 `来源+批次号`。
-- **接收校验**：节点上报的 `payload.nodeCode` 必须与令牌身份一致，否则 403。
-- **全景汇聚**：`GET api/admin/federation/aggregate` 默认把本节点自身指标一并纳入（来源=本节点编码），得到"本节点 + 对端"全景；`Federation:IncludeSelfInAggregate=false` 时仅汇总已接收的对端数据。另支持 `?regionPrefix=` 按来源节点区划码前缀过滤（省=前 2 位，市=前 4 位），映射来自 `fed_node.region_code` 与本节点 `RegionCode`。
-- **部署**：每个节点部署一套独立 `{ MySQL + API }`（迁移 SQL 内写死 `USE agro_market`，同一 MySQL 实例不能承载两个节点）。多级集群编排见根目录 `docker-compose.cluster.yml`，引导脚本 `scripts/federation-bootstrap.sh`，完整手册见 `.monkeycode/docs/federation-deploy.md`。
+- **同步**：`FederationService` 负责推送/拉取/导出/接收；`FederationSyncWorker` 按生效的 `SyncIntervalMinutes` 定时执行（`AutoSync` 控制，启动错峰 10~40s + 周期抖动 0~20%），并用 `FederationRepository.TryAcquireSyncLockAsync`（MySQL `GET_LOCK`）做跨副本互斥。对端未配置 `node_token` 时自动使用本节点令牌。全部写入幂等：指标 `来源+日期`、明细 `来源+类型+外部ID`、批次 `来源+批次号`。
+- **接收校验与多跳**：默认要求上报 `payload.nodeCode` 与令牌身份一致，否则 403。开启中间节点 `ForwardReceived` 后，上行载荷会附带**原始来源** `sourceNodeCode`；汇聚端开启 `AcceptForwarded` 即按原始来源归组落库（幂等），支持 `县→市→省` 多跳且不双计。
+- **汇聚只读**：`Federation:Role=AGGREGATOR` 时 `AggregatorReadOnlyMiddleware` 拦截 `/api/*` 写方法（放行 `auth`/`federation`/`admin/federation`），仅用于汇聚/中转节点。
+- **运行时设置**：`FederationSettings` 以 `fed_setting` 持久化白名单键（`AutoSync`/`SyncIntervalMinutes`/`BackfillDays`/`RecordWindowHours`/`IncludeSelfInAggregate`/`ForwardReceived`/`AcceptForwarded`/`HealthStaleMinutes`/`NodeName`/`RegionCode`），覆盖配置文件并即时生效；`GET/PUT api/admin/federation/settings` 读写。
+- **全景汇聚**：`GET api/admin/federation/aggregate` 默认把本节点自身指标一并纳入（来源=本节点编码），得到"本节点 + 对端"全景；`Federation:IncludeSelfInAggregate=false` 时仅汇总已接收的对端数据。另支持 `?regionPrefix=` 按来源节点区划码前缀过滤（省=前 2 位，市=前 4 位）。
+- **同步健康**：`GET api/admin/federation/health` 返回各对端 `healthy/stale/lastError`（阈值 `EffectiveStaleMinutes`）。
+- **部署**：每个节点部署一套独立 `{ MySQL + API }`（迁移 SQL 内写死 `USE agro_market`，同一 MySQL 实例不能承载两个节点）。开箱即用的省/市/县单节点交付物见根目录 `deploy/`；三级集群编排见 `docker-compose.cluster.yml`，引导脚本 `scripts/federation-bootstrap.sh`，完整手册见 `.monkeycode/docs/federation-deploy.md`。
 
 ## 文件上传（断点续传）
 - `POST /api/files/upload/init`：初始化分片会话，返回 `uploadId`、`chunkSize`、`totalChunks`。
@@ -227,8 +235,8 @@ AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡
 | AI | GET/POST/PUT/DELETE | `/api/ai/chat`、`/api/ai/conversations`、`/api/ai/conversations/{id}`、`.../messages`、`/api/ai/assist/publish`、`/api/ai/insight`、`/api/ai/ask` |
 | 举报/公告/上传 | - | `/api/reports`、`/api/notices`、`/api/files/upload` |
 | 管理 | GET/POST | `/api/admin/stats|users|auths|supplies|demands|reports|logs` 及对应 audit/freeze/handle 操作 |
-| 联动(节点间) | GET/POST | `/api/federation/node/ping`、`/api/federation/node/reports`、`/api/federation/node/export?since=&limit=`（节点令牌鉴权） |
-| 联动(管理端) | GET/POST/PUT/DELETE | `/api/admin/federation/self|nodes|nodes/token|reports|metrics|records|aggregate|sync/push|sync/pull`（仅管理员） |
+| 联动(节点间) | GET/POST | `/api/federation/node/ping`、`/api/federation/node/reports`、`/api/federation/node/export?since=&limit=`、`/api/federation/node/key`（节点令牌鉴权） |
+| 联动(管理端) | GET/POST/PUT/DELETE | `/api/admin/federation/self|nodes|nodes/token|reports|metrics|records|aggregate|health|settings|sync/push|sync/pull|key|key/generate|nodes/{id}/key/fetch`（仅管理员） |
 
 列表查询参数（供应/采购）：`keyword`、`categoryId`、`priceMin/Max`、`townId`、`villageId`、`townIncludeVillages`、`orderBy`、`page`、`pageSize`；`status=PUBLIC`（默认）或 `MINE`（我的，需登录）。
 
@@ -240,7 +248,7 @@ dotnet build AgroMarket.Api/AgroMarket.Api.csproj
 dotnet run --project AgroMarket.Tests
 ```
 
-覆盖：健康检查、未登录 401、密码登录、管理员统计（区分演示成交额）、越权 403、公开列表、报价→接受→下单→确认→未支付禁止发货→渠道不可用 501→模拟支付→发货→收货完整状态机、采购需求报价转订单、站内聊天（会话去重、消息幂等、未读/已读、非成员 403、删除仅对己生效）、WebSocket 实时通道、微信式富消息（图片/引用/撤回/送达/输入状态/对端游标）、实时推送（`read`/`delivered`/`typing`/`recall` 推送至对端）、会话设置（置顶/免打扰/备注名回显、备注超长 400、空串清除、`filter=UNREAD` 命中与已读后移出）、从聊天转订单（分享商品/会话内报价/直接下单/订单卡片推送/会话内还价·接受·拒绝）、拉黑管理，以及 AI E2E（内置 Mock LLM 强校验 tool_call_id，自动验证两轮工具调用、titleSuggestions、anomalies），与多节点联动（节点令牌鉴权、上报接收与幂等、上报身份不一致 403、推送/拉取、批次审计、跨节点汇聚、明细脱敏）。
+覆盖：健康检查、未登录 401、密码登录、管理员统计（区分演示成交额）、越权 403、公开列表、报价→接受→下单→确认→未支付禁止发货→渠道不可用 501→模拟支付→发货→收货完整状态机、采购需求报价转订单、站内聊天（会话去重、消息幂等、未读/已读、非成员 403、删除仅对己生效）、WebSocket 实时通道、微信式富消息（图片/引用/撤回/送达/输入状态/对端游标）、实时推送（`read`/`delivered`/`typing`/`recall` 推送至对端）、会话设置（置顶/免打扰/备注名回显、备注超长 400、空串清除、`filter=UNREAD` 命中与已读后移出）、从聊天转订单（分享商品/会话内报价/直接下单/订单卡片推送/会话内还价·接受·拒绝）、拉黑管理，以及 AI E2E（内置 Mock LLM 强校验 tool_call_id，自动验证两轮工具调用、titleSuggestions、anomalies），与多节点联动（节点令牌鉴权、上报接收与幂等、上报身份不一致 403、推送/拉取、批次审计、跨节点汇聚、明细脱敏、多跳转发、非对称密钥分发与验签、同步健康、运行时设置、以及独立实例的 AGGREGATOR 只读拦截）。
 
 ## 数据一致性约定
 

@@ -28,6 +28,11 @@ public class FederationAdminController : ControllerBase
     public async Task<ActionResult<ApiResponse<List<FedNodeDto>>>> Nodes()
         => Ok(ApiResponse<List<FedNodeDto>>.Ok(await _admin.ListNodesAsync()));
 
+    /// <summary>同步健康总览 (对端最近同步时间/过期/错误)。</summary>
+    [HttpGet("health")]
+    public async Task<ActionResult<ApiResponse<FedHealthDto>>> Health()
+        => Ok(ApiResponse<FedHealthDto>.Ok(await _admin.GetHealthAsync()));
+
     [HttpPost("nodes")]
     public async Task<ActionResult<ApiResponse<object>>> UpsertNode([FromBody] FedNodeUpsertRequest req)
     {
@@ -60,6 +65,31 @@ public class FederationAdminController : ControllerBase
     [HttpPost("nodes/token")]
     public ActionResult<ApiResponse<object>> IssueToken([FromBody] FedIssueTokenRequest req)
         => Ok(ApiResponse<object>.Ok(_admin.IssueToken(req)));
+
+    /// <summary>本节点非对称令牌密钥信息 (不含私钥)。</summary>
+    [HttpGet("key")]
+    public ActionResult<ApiResponse<object>> Key()
+        => Ok(ApiResponse<object>.Ok(_admin.GetKeyInfo()));
+
+    /// <summary>运行时设置 (可热改的白名单项)。</summary>
+    [HttpGet("settings")]
+    public ActionResult<ApiResponse<object>> Settings()
+        => Ok(ApiResponse<object>.Ok(_admin.GetSettings()));
+
+    /// <summary>更新运行时设置 (null/空串清除覆盖)。</summary>
+    [HttpPut("settings")]
+    public ActionResult<ApiResponse<object>> UpdateSettings([FromBody] Dictionary<string, string?> values)
+        => Ok(ApiResponse<object>.Ok(_admin.UpdateSettings(values)));
+
+    /// <summary>生成/重置本节点非对称令牌密钥对 (force=true 覆盖已有)。</summary>
+    [HttpPost("key/generate")]
+    public ActionResult<ApiResponse<object>> GenerateKey([FromQuery] bool force = false)
+        => Ok(ApiResponse<object>.Ok(_admin.GenerateKey(force)));
+
+    /// <summary>从指定对端拉取其公钥并存储 (非对称令牌模式)。</summary>
+    [HttpPost("nodes/{id:long}/key/fetch")]
+    public async Task<ActionResult<ApiResponse<object>>> FetchPeerKey(long id)
+        => Ok(ApiResponse<object>.Ok(await _admin.FetchPeerKeyAsync(id)));
 
     [HttpGet("reports")]
     public async Task<ActionResult<ApiResponse<object>>> Reports([FromQuery] string? source, [FromQuery] int page = 1, [FromQuery] int size = 20)

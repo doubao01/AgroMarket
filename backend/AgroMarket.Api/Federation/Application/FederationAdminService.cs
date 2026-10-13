@@ -12,14 +12,21 @@ public class FederationAdminService
     private readonly FederationRepository _repo;
     private readonly FederationTokenService _tokens;
     private readonly FederationSnapshotBuilder _snapshot;
+    private readonly FederationKeyStore _keys;
+    private readonly FederationSettings _settings;
+    private readonly FedHttpClient _http;
     private readonly FederationOptions _opt;
 
     public FederationAdminService(FederationRepository repo, FederationTokenService tokens,
-        FederationSnapshotBuilder snapshot, IOptions<FederationOptions> opt)
+        FederationSnapshotBuilder snapshot, FederationKeyStore keys, FederationSettings settings,
+        FedHttpClient http, IOptions<FederationOptions> opt)
     {
         _repo = repo;
         _tokens = tokens;
         _snapshot = snapshot;
+        _keys = keys;
+        _settings = settings;
+        _http = http;
         _opt = opt.Value;
     }
 
@@ -28,12 +35,120 @@ public class FederationAdminService
         Enabled = _opt.Enabled,
         HasIdentity = _opt.HasIdentity,
         NodeCode = _opt.NodeCode,
-        NodeName = _opt.NodeName,
+        NodeName = _settings.NodeName,
         Level = _opt.Level,
-        RegionCode = _opt.RegionCode,
-        AutoSync = _opt.AutoSync,
-        SyncIntervalMinutes = _opt.SyncIntervalMinutes,
+        RegionCode = _settings.RegionCode,
+        AutoSync = _settings.AutoSync,
+        SyncIntervalMinutes = _settings.SyncIntervalMinutes,
+        TokenMode = _opt.TokenMode,
+        Role = _opt.Role,
+        IncludeSelfInAggregate = _settings.IncludeSelfInAggregate,
+        ForwardReceived = _settings.ForwardReceived,
+        AcceptForwarded = _settings.AcceptForwarded,
     };
+
+    /// <summary>运行时设置快照 (白名单键的全部生效值)。</summary>
+    public object GetSettings() => new
+    {
+        editable = FederationSettings.Keys,
+        items = _settings.Snapshot().Select(kv => new { key = kv.Key, value = kv.Value }).ToList(),
+    };
+
+    /// <summary>更新运行时设置 (白名单外的键报错)。</summary>
+    public object UpdateSettings(Dictionary<string, string?> values)
+    {
+        _settings.Update(values);
+        return new
+        {
+            updated = values.Count,
+            items = _settings.Snapshot().Select(kv => new { key = kv.Key, value = kv.Value }).ToList(),
+        };
+    }
+
+    /// <summary>同步健康总览: 对端最近推/拉时间、过期与错误标记。</summary>
+    public async Task<FedHealthDto> GetHealthAsync()
+    {
+        var nodes = await _repo.ListNodesAsync();
+        var now = DateTime.Now;
+        var stale = _settings.EffectiveStaleMinutes;
+        var peers = nodes.Select(n =>
+        {
+            var last = Max(n.LastPushAt, n.LastPullAt);
+            var mins = last.HasValue ? Math.Round((now - last.Value).TotalMinutes, 1) : (double?)null;
+            var isStale = n.Status == "ACTIVE" && (!last.HasValue || mins > stale);
+            return new FedPeerHealthDto
+            {
+                NodeCode = n.NodeCode, NodeName = n.NodeName, Level = n.Level,
+                Direction = n.Direction, Status = n.Status,
+                LastPushAt = n.LastPushAt, LastPullAt = n.LastPullAt,
+                LastSyncAt = last, LastSyncMinutes = mins, Stale = isStale,
+                Healthy = n.Status == "ACTIVE" && !isStale && string.IsNullOrWhiteSpace(n.LastError),
+                LastError = n.LastError,
+            };
+        }).ToList();
+        var active = peers.Count(p => p.Status == "ACTIVE");
+        var unhealthy = peers.Count(p => p.Status == "ACTIVE" && !p.Healthy);
+        return new FedHealthDto
+        {
+            Enabled = _opt.Enabled,
+            NodeCode = _opt.NodeCode,
+            AutoSync = _settings.AutoSync,
+            SyncIntervalMinutes = _settings.SyncIntervalMinutes,
+            StaleMinutes = stale,
+            CheckedAt = now,
+            Healthy = _opt.Enabled && unhealthy == 0,
+            ActiveNodes = active,
+            UnhealthyNodes = unhealthy,
+            Peers = peers,
+        };
+    }
+
+    private static DateTime? Max(DateTime? a, DateTime? b)
+    {
+        if (a is null) return b;
+        if (b is null) return a;
+        return a > b ? a : b;
+    }
+
+    /// <summary>本节点密钥信息 (不含私钥)。</summary>
+    public object GetKeyInfo()
+    {
+        var row = _keys.GetLocalKeypair();
+        return new
+        {
+            mode = _opt.TokenMode,
+            nodeCode = _opt.NodeCode,
+            alg = row?.Alg ?? FederationKeyStore.Alg,
+            hasKeypair = row is not null,
+            publicKey = row?.PublicKey ?? _keys.EnsureLocalKeypair(),
+        };
+    }
+
+    /// <summary>生成/重置本节点非对称密钥对。</summary>
+    public object GenerateKey(bool force)
+    {
+        try
+        {
+            var pub = _keys.Regenerate(force);
+            return new { generated = true, alg = FederationKeyStore.Alg, publicKey = pub };
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new BizException(ex.Message, ErrorCodes.BadRequest);
+        }
+    }
+
+    /// <summary>从对端拉取其公钥并存入本节点 (非对称令牌模式)。</summary>
+    public async Task<object> FetchPeerKeyAsync(long id)
+    {
+        var node = await _repo.GetNodeByIdAsync(id) ?? throw new BizException("节点不存在", ErrorCodes.NotFound);
+        var key = await _http.GetKeyAsync(node.BaseUrl)
+                  ?? throw new BizException($"对端 {node.NodeCode} 未返回公钥", ErrorCodes.ServerError);
+        if (string.IsNullOrWhiteSpace(key.PublicKey) || !key.PublicKey.Contains("PUBLIC KEY"))
+            throw new BizException($"对端 {node.NodeCode} 公钥格式非法", ErrorCodes.ServerError);
+        _keys.SetPeerPublicKey(id, key.PublicKey);
+        return new { nodeCode = node.NodeCode, alg = key.Alg, length = key.PublicKey.Length };
+    }
 
     public async Task<List<FedNodeDto>> ListNodesAsync()
     {
@@ -42,6 +157,7 @@ public class FederationAdminService
         {
             Id = n.Id, NodeCode = n.NodeCode, NodeName = n.NodeName, Level = n.Level,
             RegionCode = n.RegionCode, BaseUrl = n.BaseUrl, HasToken = !string.IsNullOrWhiteSpace(n.NodeToken),
+            HasPublicKey = n.HasPublicKey,
             Direction = n.Direction, Status = n.Status,
             LastPushAt = n.LastPushAt, LastPullAt = n.LastPullAt, LastError = n.LastError,
         }).ToList();
@@ -85,10 +201,12 @@ public class FederationAdminService
     public object IssueToken(FedIssueTokenRequest req)
     {
         var nodeCode = string.IsNullOrWhiteSpace(req.NodeCode) ? _opt.NodeCode : req.NodeCode!.Trim();
-        var nodeName = string.IsNullOrWhiteSpace(req.NodeName) ? (nodeCode == _opt.NodeCode ? _opt.NodeName : nodeCode) : req.NodeName!.Trim();
+        var nodeName = string.IsNullOrWhiteSpace(req.NodeName) ? (nodeCode == _opt.NodeCode ? _settings.NodeName : nodeCode) : req.NodeName!.Trim();
         var level = FedLevels.IsValid(req.Level) ? req.Level! : (nodeCode == _opt.NodeCode ? _opt.Level : FedLevels.County);
-        var regionCode = EmptyToNull(req.RegionCode) ?? (nodeCode == _opt.NodeCode ? _opt.RegionCode : null);
-        var token = _tokens.Issue(nodeCode, nodeName, level, regionCode, req.Days ?? 0);
+        var regionCode = EmptyToNull(req.RegionCode) ?? (nodeCode == _opt.NodeCode ? _settings.RegionCode : null);
+        if (!string.IsNullOrWhiteSpace(req.Mode) && !TokenModes.IsValid(req.Mode))
+            throw new BizException("mode 只能是 SYMMETRIC/ASYMMETRIC", ErrorCodes.BadRequest);
+        var token = _tokens.Issue(nodeCode, nodeName, level, regionCode, req.Days ?? 0, req.Mode);
         return new { nodeCode, nodeName, level, regionCode, token };
     }
 
@@ -112,6 +230,7 @@ public class FederationAdminService
         var rows = await _repo.QueryMetricsAsync(source, from, to);
         return rows.Select(r => new FedMetricDto
         {
+            SourceNodeCode = r.SourceNodeCode,
             StatDate = r.StatDate, UserCount = r.UserCount, ActiveUserCount = r.ActiveUserCount,
             NewUserCount = r.NewUserCount, SupplyCount = r.SupplyCount, DemandCount = r.DemandCount,
             OrderCount = r.OrderCount, TradeAmount = r.TradeAmount, MessageCount = r.MessageCount,
@@ -142,7 +261,7 @@ public class FederationAdminService
         {
             var regionOf = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
             foreach (var n in await _repo.ListNodesAsync()) regionOf[n.NodeCode] = n.RegionCode;
-            if (!string.IsNullOrWhiteSpace(_opt.NodeCode)) regionOf[_opt.NodeCode] = _opt.RegionCode;
+            if (!string.IsNullOrWhiteSpace(_opt.NodeCode)) regionOf[_opt.NodeCode] = _settings.RegionCode;
             allowed = regionOf
                 .Where(kv => kv.Value != null && kv.Value.StartsWith(regionPrefix, StringComparison.Ordinal))
                 .Select(kv => kv.Key).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
@@ -155,8 +274,8 @@ public class FederationAdminService
         // 若已存在同编码的接收数据 (例如自身也曾作为对端上报过), 则不重复叠加; 带区划前缀时本节点也须匹配。
         var selfCode = _opt.NodeCode;
         var selfMatches = regionPrefix == null
-            || (!string.IsNullOrWhiteSpace(_opt.RegionCode) && _opt.RegionCode.StartsWith(regionPrefix, StringComparison.Ordinal));
-        if (_opt.IncludeSelfInAggregate && selfMatches && !string.IsNullOrWhiteSpace(selfCode)
+            || (!string.IsNullOrWhiteSpace(_settings.RegionCode) && _settings.RegionCode!.StartsWith(regionPrefix, StringComparison.Ordinal));
+        if (_settings.IncludeSelfInAggregate && selfMatches && !string.IsNullOrWhiteSpace(selfCode)
             && !byNode.Any(n => n.SourceNodeCode == selfCode))
         {
             var local = await _snapshot.BuildMetricsAsync(from, to);

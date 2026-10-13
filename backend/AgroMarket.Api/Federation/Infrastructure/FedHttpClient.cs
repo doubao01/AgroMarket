@@ -43,6 +43,14 @@ public class FedHttpClient
         return await ReadEnvelopeAsync<FedExportDto>(resp, url, ct);
     }
 
+    /// <summary>拉取对端公钥 (非对称令牌模式用于校验)。</summary>
+    public async Task<FedKeyDto?> GetKeyAsync(string baseUrl, CancellationToken ct = default)
+    {
+        var url = Join(baseUrl, "/api/federation/node/key");
+        using var resp = await _http.GetAsync(url, ct);
+        return await ReadEnvelopeAsync<FedKeyDto>(resp, url, ct);
+    }
+
     private async Task<T?> ReadEnvelopeAsync<T>(HttpResponseMessage resp, string url, CancellationToken ct)
     {
         if (!resp.IsSuccessStatusCode)
