@@ -26,6 +26,11 @@
       <text class="dash-entry-arrow">›</text>
     </view>
 
+    <view class="card dash-entry" style="margin:16rpx 24rpx;" @tap="goAlert">
+      <text class="dash-entry-title">报警中心 / 规则与记录</text>
+      <text class="dash-entry-arrow">›</text>
+    </view>
+
     <view class="tabs mt16">
       <view class="tab" :class="{ active: tab === 'supply' }" @tap="switchTab('supply')">供审</view>
       <view class="tab" :class="{ active: tab === 'demand' }" @tap="switchTab('demand')">采审</view>
@@ -73,6 +78,7 @@ export default {
     goDashboard() { uni.navigateTo({ url: '/pages/dashboard/index' }) },
     goManage() { uni.navigateTo({ url: '/pages/admin/manage' }) },
     goFederation() { uni.navigateTo({ url: '/pages/admin/federation' }) },
+    goAlert() { uni.navigateTo({ url: '/pages/admin/alert' }) },
     switchTab(t) { this.tab = t; this.reload() },
     async reload() {
       this.loading = true
