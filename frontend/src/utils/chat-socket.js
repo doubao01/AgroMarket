@@ -63,6 +63,7 @@ export function createChatSocket(handlers = {}) {
       else if (data.type === 'typing') handlers.onTyping && handlers.onTyping(data)
       else if (data.type === 'recall') handlers.onRecall && handlers.onRecall(data)
       else if (data.type === 'ack') handlers.onAck && handlers.onAck(data)
+      else if (data.type === 'notify') handlers.onNotify && handlers.onNotify(data)
       else if (data.type === 'error') uni.showToast({ title: data.msg || '发送失败', icon: 'none' })
     })
     task.onClose(() => {
