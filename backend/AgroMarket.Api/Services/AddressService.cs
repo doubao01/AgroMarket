@@ -19,9 +19,11 @@ public class AddressService
         var result = new List<Dtos.AddressDto>();
         foreach (var r in rows)
         {
+            // 根据区县反查省/市 (原实现硬编码 410000 河南省/410100 郑州市)。
+            var (province, city, county) = await _regions.GetAncestryAsync(r.CountyId);
             var (_, tName, vName) = await _regions.GetRegionNamesAsync(r.CountyId, r.TownId, r.VillageId);
             var countyName = r.CountyId == null ? null : (await _regions.GetRegionNamesAsync(r.CountyId, null, null)).Item1;
-            result.Add(new Dtos.AddressDto(r.Id, r.ContactName, r.Phone, 410000, 410100, r.CountyId, r.TownId, r.VillageId,
+            result.Add(new Dtos.AddressDto(r.Id, r.ContactName, r.Phone, province?.Id, city?.Id, r.CountyId, r.TownId, r.VillageId,
                 $"{countyName ?? ""}{tName ?? ""}{vName ?? ""} {r.Detail}", r.IsDefault));
         }
         return result;
