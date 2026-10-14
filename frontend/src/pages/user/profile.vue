@@ -48,9 +48,11 @@ export default {
   methods: {
     async save() {
       try {
+        // 资料页不修改经营类型: 不传 role, 后端 COALESCE 保持原值。
+        // (旧实现回传 me.role, 管理员 ADMIN 会被后端白名单拒绝而无法保存资料。)
         const res = await userApi.updateProfile({
           nickname: this.form.nickname, avatarUrl: this.me.avatarUrl, homeRegionId: this.me.homeRegionId,
-          contactDisplay: this.form.contactDisplay, contactPhone: this.form.contactPhone, role: this.me.role,
+          contactDisplay: this.form.contactDisplay, contactPhone: this.form.contactPhone,
         })
         setUser(res)
         uni.showToast({ title: '已保存' })

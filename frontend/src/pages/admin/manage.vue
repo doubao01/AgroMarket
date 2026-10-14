@@ -270,7 +270,7 @@ export default {
       } catch (e) { if (!more) this.logs = [] }
     },
     userStatusText(s) { return { ACTIVE: '正常', FROZEN: '已冻结' }[s] || s || '' },
-    roleText(r) { return { USER: '普通用户', ADMIN: '管理员', MERCHANT: '商户' }[r] || r || '' },
+    roleText(r) { return { FARMER: '农户', BUYER: '采购商', COOP: '合作社', ENTERPRISE: '企业', ADMIN: '管理员' }[r] || r || '' },
     maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(-4) : '' },
     fmt(t) { return t ? String(t).replace('T', ' ').slice(0, 16) : '' },
     logDetail(l) {
