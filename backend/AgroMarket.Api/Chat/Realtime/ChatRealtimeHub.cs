@@ -6,6 +6,7 @@ using System.Text.Json;
 using AgroMarket.Api.Chat.Application;
 using AgroMarket.Api.Chat.Dtos;
 using AgroMarket.Api.Common;
+using Dapper;
 using Microsoft.IdentityModel.Tokens;
 
 namespace AgroMarket.Api.Chat.Realtime;
@@ -14,7 +15,7 @@ namespace AgroMarket.Api.Chat.Realtime;
 /// 原生 WebSocket 聊天通道 (ADR-1)。协议为 JSON 文本帧:
 /// 客户端 -> 服务端: {type:"ping"} | {type:"send",conversationId,clientMsgId,messageType,content,payload?,bizType?,bizId?,replyToMessageId?} | {type:"read",conversationId,lastReadMessageId} | {type:"delivered",conversationId,lastDeliveredMessageId} | {type:"typing",conversationId,typing} | {type:"recall",messageId}
 /// 服务端 -> 客户端: {type:"connected"} | {type:"pong"} | {type:"message",...} | {type:"read",...} | {type:"delivered",...} | {type:"typing",...} | {type:"recall",...} | {type:"ack",...} | {type:"error",...}
-/// 鉴权: 握手时从 query ?token= 或 Authorization/X-Token 头解析 JWT。
+/// 鉴权: 握手时从 query ?token= 或 Authorization/X-Token 头解析 JWT, 并校验账号为 ACTIVE。
 /// </summary>
 public static class ChatRealtimeHub
 {
@@ -34,6 +35,20 @@ public static class ChatRealtimeHub
         {
             ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
+        }
+
+        // 长连接不经过 HTTP 鉴权过滤器, 需在此额外校验账号状态:
+        // 冻结/禁用用户即使持有未过期 JWT 也不得建立聊天长连接 (与 AuthHandler 的 ACTIVE 校验保持一致)。
+        var db = ctx.RequestServices.GetRequiredService<IDbConnectionFactory>();
+        using (var checkConn = db.Create())
+        {
+            var status = await checkConn.QuerySingleOrDefaultAsync<string>(
+                "SELECT status FROM sys_user WHERE id=@id", new { id = userId.Value });
+            if (status != "ACTIVE")
+            {
+                ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
         }
 
         var mgr = ctx.RequestServices.GetRequiredService<ChatConnectionManager>();
