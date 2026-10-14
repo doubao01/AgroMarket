@@ -1,0 +1,45 @@
+{
+  "ConnectionStrings": {
+    "Default": "Server=127.0.0.1;Port=3306;Database=agro_market;User=agromarket;Password=your-db-password;DefaultCommandTimeout=30;"
+  },
+  "Jwt": {
+    "SecretKey": "***REMOVED***"
+  },
+  "Sms": {
+    "DevMode": true,
+    "Provider": "Mock"
+  },
+  "Payment": {
+    "MockEnabled": true
+  },
+  "Ai": {
+    "Enabled": true,
+    "Provider": "OpenAICompat",
+    "BaseUrl": "https://api.deepseek.com/v1",
+    "Model": "deepseek-chat",
+    "ApiKey": "your-llm-api-key-here",
+    "TimeoutSeconds": 60,
+    "MaxTokens": 1024,
+    "Temperature": 0.3
+  },
+  "Federation": {
+    "Enabled": true,
+    "AutoSync": false,
+    "NodeCode": "node-xixian",
+    "NodeName": "息县农贸通",
+    "Level": "COUNTY",
+    "RegionCode": "411528",
+    "SharedKey": "dev-federation-shared-key-change-me-32bytes!!",
+    "TokenMode": "SYMMETRIC",
+    "Role": "BUSINESS",
+    "SyncIntervalMinutes": 30,
+    "BackfillDays": 7,
+    "RecordWindowHours": 24,
+    "MaxRecordsPerPush": 500,
+    "TokenDays": 365,
+    "HealthStaleMinutes": 0,
+    "IncludeSelfInAggregate": true,
+    "ForwardReceived": true,
+    "AcceptForwarded": true
+  }
+}
