@@ -1,5 +1,6 @@
 using System.Data;
 using AgroMarket.Api.Common;
+using AgroMarket.Api.Notifications;
 using Dapper;
 
 namespace AgroMarket.Api.Services;
@@ -8,8 +9,10 @@ public class AdminService
 {
     private readonly IDbConnectionFactory _db;
     private readonly RegionService _regions;
+    private readonly NotificationPushService _push;
 
-    public AdminService(IDbConnectionFactory db, RegionService regions) { _db = db; _regions = regions; }
+    public AdminService(IDbConnectionFactory db, RegionService regions, NotificationPushService push)
+    { _db = db; _regions = regions; _push = push; }
 
     private static async Task EnsureAdminAsync(IDbConnection conn, long userId)
     {
@@ -89,6 +92,7 @@ public class AdminService
             new { s = approved ? "APPROVED" : "REJECTED", r = remark, op = operatorId, id = authId });
         if (affected == 0) throw new BizException("认证申请不存在或已处理", ErrorCodes.Conflict);
         await LogAsync(operatorId, "AUTH", approved ? "APPROVE" : "REJECT", authId, remark, null);
+        await NotifyAuditResultAsync(conn, "merchant_profile", authId, approved, remark);
     }
 
     // ---------- 供应/采购审核 ----------
@@ -103,6 +107,7 @@ public class AdminService
         if (affected == 0) throw new BizException("供应信息不存在或已审核", ErrorCodes.Conflict);
         var publisher = await conn.ExecuteScalarAsync<long>("SELECT publisher_id FROM product_supply WHERE id=@id", new { id = supplyId });
         await LogAsync(operatorId, "SUPPLY", target, supplyId, reason, null);
+        await PushAuditAsync(publisher, "供应信息", approve, supplyId, reason);
     }
 
     public async Task AuditDemandAsync(long operatorId, long demandId, bool approve, string? reason)
@@ -114,7 +119,9 @@ public class AdminService
             "UPDATE purchase_demand SET status=@st WHERE id=@id AND status='PENDING'",
             new { st = target, id = demandId });
         if (affected == 0) throw new BizException("采购需求不存在或已审核", ErrorCodes.Conflict);
+        var publisher = await conn.ExecuteScalarAsync<long>("SELECT publisher_id FROM purchase_demand WHERE id=@id", new { id = demandId });
         await LogAsync(operatorId, "DEMAND", target, demandId, reason, null);
+        await PushAuditAsync(publisher, "采购需求", approve, demandId, reason);
     }
 
     // ---------- 区域管理 ----------
@@ -190,7 +197,33 @@ public class AdminService
             "UPDATE report_complaint SET status=@s, handle_remark=@r, handled_by=@op, handled_at=NOW(3) WHERE id=@id AND status='PENDING'",
             new { s = resolve ? "RESOLVED" : "REJECTED", r = remark, op = operatorId, id = reportId });
         if (affected == 0) throw new BizException("举报不存在或已处理", ErrorCodes.Conflict);
+        var reporter = await conn.ExecuteScalarAsync<long>("SELECT reporter_id FROM report_complaint WHERE id=@id", new { id = reportId });
         await LogAsync(operatorId, "REPORT", resolve ? "RESOLVE" : "REJECT", reportId, remark, null);
+        await _push.NotifyAsync(reporter, "REPORT",
+            resolve ? "举报处理结果" : "举报不予受理",
+            resolve ? "您提交的举报已处理，感谢反馈。" : "您提交的举报经核实不予受理。", reportId);
+    }
+
+    // ---------- 审核结果站内推送 ----------
+    /// <summary>商家认证审核: 通知申请人本人。查不到申请人则静默跳过。</summary>
+    private async Task NotifyAuditResultAsync(IDbConnection conn, string table, long targetId, bool approved, string? remark)
+    {
+        var userId = await conn.ExecuteScalarAsync<long?>($"SELECT user_id FROM {table} WHERE id=@id", new { id = targetId });
+        if (userId == null) return;
+        await _push.NotifyAsync(userId.Value, "AUDIT",
+            approved ? "商家认证审核通过" : "商家认证审核未通过",
+            approved ? "您的商家认证已通过审核。" : $"您的商家认证未通过审核。{(string.IsNullOrWhiteSpace(remark) ? "" : $"原因：{remark}")}",
+            targetId);
+    }
+
+    /// <summary>供应/采购审核: 通知发布者。</summary>
+    private async Task PushAuditAsync(long userId, string subject, bool approve, long targetId, string? reason)
+    {
+        if (userId <= 0) return;
+        await _push.NotifyAsync(userId, "AUDIT",
+            approve ? $"{subject}审核通过" : $"{subject}审核未通过",
+            approve ? $"您的{subject}已通过审核。" : $"您的{subject}未通过审核。{(string.IsNullOrWhiteSpace(reason) ? "" : $"原因：{reason}")}",
+            targetId);
     }
 
     // ---------- 公告 ----------

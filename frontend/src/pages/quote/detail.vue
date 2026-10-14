@@ -59,6 +59,7 @@
 <script>
 import { quoteApi, orderApi } from '../../api/index'
 import { requireLogin, getUser } from '../../utils/request'
+import { requestSubscribe } from '../../utils/subscribe'
 
 export default {
   data() {
@@ -103,6 +104,7 @@ export default {
     },
     async doCreateOrder() {
       try {
+        requestSubscribe('ORDER')
         const o = await orderApi.createFromQuote(this.id, this.orderForm)
         this.showOrder = false
         uni.showToast({ title: '订单已创建' })

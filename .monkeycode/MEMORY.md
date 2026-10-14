@@ -192,3 +192,13 @@ This file records user instructions, preferences, and teachings for reference in
   - **`init-db.sh`**：客户端自动选 `mariadb`→`mysql`；口令变量兼容 `DB_PASS`/`DB_PASSWORD`。
   - **deploy README**：登录接口更正为 `POST /api/auth/login/password`；`sync/push?node=`（非 `nodeId`）；健康检查用公开 `/health`（`/api/federation/node/ping` 需节点令牌，会 401）。
   - **位置切换（location-switcher）补齐**：`region-picker.vue` 新增 `closeOnTownSelect` prop（首页传 true，满足 R1 AC3「选中乡镇即关闭」；市场/发布页保持两步选村镇）；首页/市场页**持久化 `villageName`**（此前恒为 `''`，导致发布页预填 `regionLabel` 丢失村级）。
+
+[Project Knowledge Summary]
+- Date: 2026-10-13
+- Context: Discovered by Agent while implementing supply/demand UX improvements (price sort, demand images/negotiable, publish entry, sold/quote stats)
+- Category: Workflow & Collaboration / Environment Configuration
+- Instructions:
+  - **迁移 10**：`database/10_market_enhance.sql` 为 `purchase_demand` 增 `negotiable TINYINT(1) NOT NULL DEFAULT 1`（动态 ALTER 幂等，兼容 MySQL8/MariaDB）；`product_image.demand_id` 此前已存在（01_schema），采购图片直接复用该表。
+  - **DTO 字段**：`SupplyDto` 增 `SoldQuantity`（该供应在 COMPLETED 订单中的 `trade_order_item.quantity` 合计，快照 `supply_id` 关联）；`DemandDto` 增 `Negotiable`/`QuoteCount`（`trade_quote` 中该需求非 REJECTED/CLOSED 的报价数）/`Images`；`DemandCreateRequest` 增 `Negotiable`/`Images`。价格排序统一空值置底：供应 `COALESCE(price,99999999.99) ASC`/`COALESCE(price,0) DESC`，采购升序按 `price_min`、降序按 `price_max`。
+  - 采购发布页 `demand/publish.vue` 与供应发布对齐（图片九宫格 + 价格可议 switch + AI 助手）；市场大厅 tabs 右侧新增「＋ 发布」快捷入口（按当前 tab 跳供应/采购发布页，`requireLogin` 守卫）。
+  - 供应详情展示「已售 X 单位」（`soldQuantity>0` 时），采购详情展示「已有 N 条报价」（`quoteCount`）+ 图片横向画廊 + 「价格可议」tag。

@@ -160,7 +160,7 @@ dotnet run --project AgroMarket.Tests
   - 智能客服/农事助手：`pages/ai/assistant.vue`（"我的"页入口），后端 `/api/ai/chat`，可实时查询平台供需与订单（只读工具）；对话历史持久化，支持多会话列表、续聊、重命名与删除（`/api/ai/conversations*`）。
   - 内容发布辅助：供应/采购发布页"AI 帮我写"按钮，`/api/ai/assist/publish` 生成描述/分类/价格区间，仅预填表单。
   - 大屏智能解读：大屏页 `AI 数据解读` 卡片，`/api/ai/insight` 自动生成结论、`/api/ai/ask` 对数据提问。
-- **配置**：LLM 通过 `Ai:*`（`BaseUrl`/`Model`/`ApiKey`）配置，Key 可用环境变量 `Ai__ApiKey` 覆盖，代码不硬编码；未配置时 AI 接口返回 `501`，不影响业务。
+- **配置**：LLM 通过 `Ai:*`（`BaseUrl`/`Model`/`ApiKey`）配置，Key 可用环境变量 `Ai__ApiKey` 覆盖，代码不硬编码；未配置时 AI 接口返回 `501`，不影响业务。本地开发配置文件 `backend/AgroMarket.Api/appsettings.Development.json` 不入库（含密钥），首次使用请复制 `appsettings.Development.json.example` 并填入数据库口令与 `Ai:ApiKey`。
 - 设计文档：`当前工作区/.monkeycode/docs/ai-dashboard-design.md`。
 
 ## 多节点联动（数据上报 / 同步）

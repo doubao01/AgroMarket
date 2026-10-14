@@ -23,11 +23,11 @@
         <view class="quick-icon">🛒</view>
         <text class="quick-text">发布采购</text>
       </view>
-      <view class="quick-item" @tap="go('/pages/market/index?tab=supply')">
+      <view class="quick-item" @tap="goMarketTab('supply')">
         <view class="quick-icon">📦</view>
         <text class="quick-text">供应大厅</text>
       </view>
-      <view class="quick-item" @tap="go('/pages/market/index?tab=demand')">
+      <view class="quick-item" @tap="goMarketTab('demand')">
         <view class="quick-icon">📋</view>
         <text class="quick-text">采购大厅</text>
       </view>
@@ -42,10 +42,32 @@
       </swiper>
     </view>
 
+    <view v-if="visibleBanners.length" class="banner-wrap container">
+      <swiper class="banner-swiper" circular autoplay interval="4000">
+        <swiper-item v-for="b in visibleBanners" :key="b.id">
+          <image :src="b.imageUrl" class="banner-img" mode="aspectFill" @tap="openBanner(b)" @error="brokenBanners[b.id] = true" />
+        </swiper-item>
+      </swiper>
+    </view>
+
+    <view class="container">
+      <view class="between section-head">
+        <text class="section-title">热点讨论</text>
+        <text class="section-more" @tap="go('/pages/community/index')">更多 ›</text>
+      </view>
+      <view v-if="hotPosts.length" class="card hot-card" @tap="go('/pages/community/index')">
+        <view v-for="p in hotPosts" :key="p.id" class="hot-row" @tap.stop="go('/pages/community/detail?id=' + p.id)">
+          <text class="hot-flame">热</text>
+          <text class="hot-title">{{ p.title }}</text>
+          <text class="muted hot-meta">{{ p.commentCount }} 评</text>
+        </view>
+      </view>
+    </view>
+
     <view class="container">
       <view class="between section-head">
         <text class="section-title">最新供应</text>
-        <text class="section-more" @tap="go('/pages/market/index?tab=supply')">更多 ›</text>
+        <text class="section-more" @tap="goMarketTab('supply')">更多 ›</text>
       </view>
       <view v-if="!loadingSupplies && !supplies.length" class="empty">暂无供应信息</view>
       <view
@@ -69,7 +91,7 @@
     <view class="container">
       <view class="between section-head">
         <text class="section-title">最新采购</text>
-        <text class="section-more" @tap="go('/pages/market/index?tab=demand')">更多 ›</text>
+        <text class="section-more" @tap="goMarketTab('demand')">更多 ›</text>
       </view>
       <view v-if="!loadingDemands && !demands.length" class="empty">暂无采购需求</view>
       <view
@@ -99,7 +121,7 @@
 </template>
 
 <script>
-import { supplyApi, demandApi, noticeApi } from '../../api/index'
+import { supplyApi, demandApi, noticeApi, bannerApi, communityApi } from '../../api/index'
 import RegionPicker from '../../components/region-picker.vue'
 import { getLocation, setLocation, getTownLabel } from '../../utils/location'
 
@@ -107,13 +129,17 @@ export default {
   components: { RegionPicker },
   data() {
     return {
-      supplies: [], demands: [], notices: [],
+      supplies: [], demands: [], notices: [], banners: [], hotPosts: [],
+      brokenBanners: {},
       loadingSupplies: false, loadingDemands: false,
       showRegion: false,
       townId: null, villageId: null, villageName: '', townLabel: '全部乡镇',
     }
   },
   onShow() { this.syncLocation(); this.load() },
+  computed: {
+    visibleBanners() { return this.banners.filter((b) => !this.brokenBanners[b.id]) },
+  },
   methods: {
     syncLocation() {
       const loc = getLocation()
@@ -144,6 +170,8 @@ export default {
       return q
     },
     async load() {
+      bannerApi.list().then((b) => { this.banners = b || [] }).catch(() => {})
+      communityApi.posts({ orderBy: 'hot', page: 1, pageSize: 3 }).then((r) => { this.hotPosts = (r.items || []) }).catch(() => {})
       this.loadingSupplies = true
       this.loadingDemands = true
       try { this.supplies = (await supplyApi.list(this.listQuery(1, 5))).items || [] } catch (e) {}
@@ -153,12 +181,39 @@ export default {
       try { this.notices = (await noticeApi.list()) || [] } catch (e) {}
     },
     go(url) { uni.navigateTo({ url }) },
+    goMarketTab(tab) {
+      // market 是 tabBar 页,navigateTo 无法打开;用 storage 传 tab
+      uni.setStorageSync('market_tab', tab)
+      uni.switchTab({ url: '/pages/market/index' })
+    },
     goMarket() { uni.switchTab({ url: '/pages/market/index' }) },
+    openBanner(b) {
+      if (b.linkType === 'PAGE' && b.linkValue) {
+        if (b.linkValue.indexOf('/pages/market/index') === 0) {
+          const m = (b.linkValue.match(/tab=(supply|demand)/) || [])[1]
+          this.goMarketTab(m || 'supply')
+        } else uni.navigateTo({ url: b.linkValue })
+      }
+      // #ifdef H5
+      else if (b.linkType === 'URL' && b.linkValue) window.open(b.linkValue)
+      // #endif
+    },
   },
 }
 </script>
 
 <style>
+.banner-wrap { margin-top: -60rpx; position: relative; z-index: 2; }
+.banner-swiper { height: 240rpx; border-radius: 16rpx; overflow: hidden; }
+.banner-img { width: 100%; height: 240rpx; border-radius: 16rpx; }
+.hot-card { padding: 20rpx 24rpx; }
+.hot-row { display: flex; align-items: center; padding: 14rpx 0; }
+.hot-flame {
+  flex-shrink: 0; font-size: 22rpx; color: #e6532e; background: #fdeee8;
+  border-radius: 6rpx; padding: 2rpx 10rpx; margin-right: 16rpx; font-weight: 600;
+}
+.hot-title { flex: 1; font-size: 28rpx; color: #1f2d24; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.hot-meta { flex-shrink: 0; margin-left: 16rpx; font-size: 24rpx; }
 .hero {
   background: linear-gradient(135deg, #2e8b57, #3aa86a);
   padding: 40rpx 32rpx 80rpx;

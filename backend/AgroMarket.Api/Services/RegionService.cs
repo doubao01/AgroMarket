@@ -67,4 +67,27 @@ public class RegionService
             townId == null ? null : await conn.ExecuteScalarAsync<string?>(sql, new { id = townId }),
             villageId == null ? null : await conn.ExecuteScalarAsync<string?>(sql, new { id = villageId }));
     }
+
+    /// <summary>沿 parent_id 向上回溯, 返回 [省, 市, 区县, 乡镇, 村] 中命中的 (Id, Name, Level), 缺失层级为 null。</summary>
+    public async Task<(Dtos.RegionDto? Province, Dtos.RegionDto? City, Dtos.RegionDto? County)> GetAncestryAsync(long? regionId)
+    {
+        if (regionId == null) return (null, null, null);
+        using var conn = _db.Create();
+        var chain = new List<Dtos.RegionDto>();
+        var cur = regionId;
+        // 最多回溯 8 层, 防止数据环导致死循环
+        for (var i = 0; i < 8 && cur != null; i++)
+        {
+            var r = await conn.QueryFirstOrDefaultAsync<Dtos.RegionDto>(
+                "SELECT id Id, region_code Code, region_name Name, region_level Level, parent_id ParentId FROM sys_region WHERE id=@id",
+                new { id = cur });
+            if (r == null) break;
+            chain.Add(r);
+            cur = r.ParentId;
+        }
+        return (
+            chain.FirstOrDefault(r => r.Level == 1),
+            chain.FirstOrDefault(r => r.Level == 2),
+            chain.FirstOrDefault(r => r.Level == 3));
+    }
 }

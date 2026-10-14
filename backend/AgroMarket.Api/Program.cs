@@ -46,6 +46,7 @@ builder.Services.AddScoped<FavoriteService>();
 builder.Services.AddScoped<AddressService>();
 builder.Services.AddScoped<AdminService>();
 builder.Services.AddScoped<DashboardService>();
+builder.Services.AddScoped<CommunityService>();
 builder.Services.AddSingleton<StorageService>();
 // 站内聊天模块
 builder.Services.AddScoped<AgroMarket.Api.Chat.Infrastructure.ChatRepository>();
@@ -88,6 +89,13 @@ builder.Services.AddScoped<FederationService>();
 builder.Services.AddScoped<FederationAdminService>();
 builder.Services.AddHttpClient<FedHttpClient>(c => c.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddHostedService<FederationSyncWorker>();
+
+// 消息推送与报警: WeChat 未配置时自动降级, 不影响业务
+builder.Services.AddHttpClient("wechat", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddSingleton<AgroMarket.Api.Notifications.WeChatPushService>();
+builder.Services.AddSingleton<AgroMarket.Api.Notifications.NotificationPushService>();
+builder.Services.AddSingleton<AgroMarket.Api.Notifications.AlertService>();
+builder.Services.AddHostedService<AgroMarket.Api.Notifications.AlertScanWorker>();
 
 // Authentication (custom lightweight JWT handler)
 builder.Services.AddAuthentication("Token")

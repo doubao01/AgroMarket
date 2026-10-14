@@ -51,6 +51,9 @@ public class ChatSearchRow : ChatConversationRow
     public long? MatchedSenderId { get; set; }
     public string? MatchedContent { get; set; }
     public DateTime? MatchedCreatedAt { get; set; }
+    /// <summary>匹配消息的类型/状态, 缺失会让前端按类型分支渲染时出错。</summary>
+    public string? MatchedMessageType { get; set; }
+    public string? MatchedStatus { get; set; }
 }
 
 /// <summary>聊天数据访问 (Dapper)。读取方法自开连接; 复合写操作在仓储内使用事务。</summary>
@@ -82,39 +85,36 @@ JOIN chat_participant peer ON peer.conversation_id = c.id AND peer.user_id <> me
 JOIN sys_user u           ON u.id = peer.user_id
 LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
 
-    private const string ConversationMatchSubqueries = @"
+    /// <summary>
+    /// 全局搜索查询串: 在用户参与且未隐藏的会话中, 命中关键词的消息里取最新一条。
+    /// 用 JOIN 派生自查询(而非多个重复的相关子查询 + EXISTS)一次性取回匹配消息,
+    /// 既减少重复扫描, 又保证四列来自同一条记录; 关键词仅匹配未撤回的文本/卡片类消息。
+    /// </summary>
+    private const string ConversationSearchSelect = @"
+SELECT c.id AS Id, c.source_type AS SourceType, c.source_id AS SourceId,
+       c.last_message_at AS LastMessageAt,
+       me.unread_count AS UnreadCount, me.is_pinned AS IsPinned, me.is_muted AS IsMuted,
+       me.remark AS Remark,
+       u.id AS PeerId, u.nickname AS PeerNickname, u.avatar_url AS PeerAvatar,
+       mp.subject_name AS SubjectName, mp.audit_status AS AuditStatus,
+       (SELECT CASE WHEN m.status='RECALLED' THEN '[已撤回]' ELSE m.content END
+          FROM chat_message m WHERE m.id = c.last_message_id) AS LastContent,
        (SELECT m.message_type FROM chat_message m WHERE m.id = c.last_message_id) AS LastMessageType,
-       (SELECT m.id FROM chat_message m
-          WHERE m.conversation_id=c.id AND m.status<>'RECALLED'
-            AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
-            AND m.content LIKE CONCAT('%',@kw,'%')
-          ORDER BY m.id DESC LIMIT 1) AS MatchedMessageId,
-       (SELECT m.sender_id FROM chat_message m
-          WHERE m.conversation_id=c.id AND m.status<>'RECALLED'
-            AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
-            AND m.content LIKE CONCAT('%',@kw,'%')
-          ORDER BY m.id DESC LIMIT 1) AS MatchedSenderId,
-       (SELECT m.content FROM chat_message m
-          WHERE m.conversation_id=c.id AND m.status<>'RECALLED'
-            AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
-            AND m.content LIKE CONCAT('%',@kw,'%')
-          ORDER BY m.id DESC LIMIT 1) AS MatchedContent,
-       (SELECT m.created_at FROM chat_message m
-          WHERE m.conversation_id=c.id AND m.status<>'RECALLED'
-            AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
-            AND m.content LIKE CONCAT('%',@kw,'%')
-          ORDER BY m.id DESC LIMIT 1) AS MatchedCreatedAt
-    FROM chat_participant me
-    JOIN chat_conversation c  ON c.id = me.conversation_id
-    JOIN chat_participant peer ON peer.conversation_id = c.id AND peer.user_id <> me.user_id
-    JOIN sys_user u           ON u.id = peer.user_id
-    LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id
-    WHERE me.user_id=@uid AND me.is_hidden=0
-      AND EXISTS (SELECT 1 FROM chat_message m2
-         WHERE m2.conversation_id=c.id AND m2.status<>'RECALLED'
-           AND m2.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
-           AND m2.content LIKE CONCAT('%',@kw,'%'))
-    ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
+       mm.id AS MatchedMessageId, mm.sender_id AS MatchedSenderId, mm.content AS MatchedContent,
+       mm.created_at AS MatchedCreatedAt, mm.message_type AS MatchedMessageType, mm.status AS MatchedStatus
+FROM chat_participant me
+JOIN chat_conversation c  ON c.id = me.conversation_id
+JOIN chat_participant peer ON peer.conversation_id = c.id AND peer.user_id <> me.user_id
+JOIN sys_user u           ON u.id = peer.user_id
+LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id
+JOIN chat_message mm ON mm.id = (
+    SELECT m.id FROM chat_message m
+    WHERE m.conversation_id = c.id AND m.status <> 'RECALLED'
+      AND m.message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
+      AND m.content LIKE CONCAT('%',@kw,'%')
+    ORDER BY m.id DESC LIMIT 1)
+WHERE me.user_id=@uid AND me.is_hidden=0
+ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
 
     // ---------------- 会话 ----------------
 
@@ -201,15 +201,6 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
         return await conn.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM chat_block WHERE (blocker_id=@a AND blocked_user_id=@b) OR (blocker_id=@b AND blocked_user_id=@a)",
             new { a, b }) > 0;
-    }
-
-    /// <summary>blocker 是否拉黑了 blocked。</summary>
-    public async Task<bool> IsBlockedByAsync(long blockerId, long blockedId)
-    {
-        using var conn = _db.Create();
-        return await conn.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM chat_block WHERE blocker_id=@b AND blocked_user_id=@t",
-            new { b = blockerId, t = blockedId }) > 0;
     }
 
     /// <summary>拉黑 (幂等)。</summary>
@@ -303,8 +294,11 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
             new { c = convId, cid = clientMsgId });
     }
 
-    /// <summary>发送消息 (事务): 落库 + 更新会话末消息 + 对方未读+1。clientMsgId 命中唯一键时返回既有消息。</summary>
-    public async Task<ChatMessageRow> SendMessageAsync(
+    /// <summary>
+    /// 发送消息 (事务): 落库 + 更新会话末消息 + 对方未读+1 + 双方取消隐藏。
+    /// clientMsgId 命中唯一键(1062)时视为幂等重发: 回滚并返回既有消息, IsNew=false, 调用方据此跳过实时广播(避免重复未读+1)。
+    /// </summary>
+    public async Task<(ChatMessageRow Row, bool IsNew)> SendMessageAsync(
         long convId, long senderId, string? clientMsgId, string messageType,
         string? content, string? payload, string? bizType, long? bizId, long? replyToMessageId)
     {
@@ -334,15 +328,16 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
 
             tx.Commit();
 
-            return await GetMessageAsync(id)
+            var row = await GetMessageAsync(id)
                 ?? throw new Common.BizException("消息写入失败", Common.ErrorCodes.ServerError);
+            return (row, true);
         }
         catch (MySqlConnector.MySqlException ex) when (ex.Number == 1062)
         {
             tx.Rollback();
             var existing = await FindMessageByClientIdAsync(convId, clientMsgId!)
                 ?? throw new Common.BizException("消息重复写入", Common.ErrorCodes.Conflict);
-            return existing;
+            return (existing, false);
         }
         catch
         {
@@ -388,24 +383,19 @@ LEFT JOIN merchant_profile mp ON mp.user_id = peer.user_id";
     {
         using var conn = _db.Create();
         var rows = await conn.QueryAsync<ChatSearchRow>(
-            "SELECT c.id AS Id, c.source_type AS SourceType, c.source_id AS SourceId, " +
-            "c.last_message_at AS LastMessageAt, " +
-            "me.unread_count AS UnreadCount, me.is_pinned AS IsPinned, me.is_muted AS IsMuted, " +
-            "me.remark AS Remark, " +
-            "u.id AS PeerId, u.nickname AS PeerNickname, u.avatar_url AS PeerAvatar, " +
-            "mp.subject_name AS SubjectName, mp.audit_status AS AuditStatus, " +
-            "(SELECT CASE WHEN m.status='RECALLED' THEN '[已撤回]' ELSE m.content END " +
-            "   FROM chat_message m WHERE m.id = c.last_message_id) AS LastContent, " +
-            ConversationMatchSubqueries,
+            ConversationSearchSelect,
             new { uid = userId, kw = keyword, limit });
 
         var results = new List<(ChatConversationRow, ChatMessageRow)>();
         foreach (var r in rows)
         {
+            // 匹配消息需带上 message_type/status, 否则前端按类型分支渲染(search 结果卡片)会拿到空类型。
             var msg = new ChatMessageRow
             {
                 Id = r.MatchedMessageId ?? 0, ConversationId = r.Id,
                 SenderId = r.MatchedSenderId ?? 0, Content = r.MatchedContent,
+                MessageType = r.MatchedMessageType ?? string.Empty,
+                Status = r.MatchedStatus ?? string.Empty,
                 CreatedAt = r.MatchedCreatedAt ?? default,
             };
             results.Add((r, msg));

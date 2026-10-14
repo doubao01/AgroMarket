@@ -151,6 +151,12 @@ export function initChat() {
       emit('recall', d)
     },
     onAck: (d) => emit('ack', d),
+    // 系统通知帧(报价/订单/报警等): 累加全局未读角标并分发
+    onNotify: (d) => {
+      chatState.totalUnread += 1
+      setBadge(chatState.totalUnread)
+      emit('notify', d)
+    },
     onStatus: (s) => {
       chatState.connected = s === 'open'
       emit('status', s)

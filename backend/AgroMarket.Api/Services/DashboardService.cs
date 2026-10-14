@@ -62,6 +62,7 @@ public class DashboardService
             var todayAmount = await conn.ExecuteScalarAsync<decimal>(
                 $"SELECT COALESCE(SUM(o.total_amount),0) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= CURDATE()");
 
+            // 注: 周/演示 统计当前前端未渲染, 保留字段以兼容既有接口契约 (改动前请确认无其他消费方)。
             var weekOrders = await conn.ExecuteScalarAsync<long>(
                 $"SELECT COUNT(DISTINCT o.id) FROM trade_order o WHERE {RealOrderWhere} AND o.completed_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)");
             var weekAmount = await conn.ExecuteScalarAsync<decimal>(
@@ -86,7 +87,8 @@ public class DashboardService
 
         return await CachedAsync($"dash:trend:{days}", async () =>
         {
-            // 生成日期序列左连接成交数据, 补齐无成交的日期
+            // 生成日期序列左连接成交数据, 补齐无成交的日期。
+            // DATE(o.completed_at) 使 completed_at 索引失效(non-sargable), 但趋势查询结果被缓存, 数据集小, 可接受。
             var rows = await conn.QueryAsync<(string Date, long OrderCount, decimal DealAmount)>(
                 $@"WITH RECURSIVE d AS (
                        SELECT CURDATE() - INTERVAL @d-1 DAY AS dt
@@ -110,6 +112,7 @@ public class DashboardService
         await EnsureAdminAsync(conn, operatorId);
         return await CachedAsync("dash:category", async () =>
         {
+            // parent_id IS NOT NULL 即排除顶级(分组)分类, 只统计末级可发布品类。
             var rows = await conn.QueryAsync<(long CategoryId, string CategoryName, long SupplyCount, long DemandCount, decimal DealAmount)>(
                 @"SELECT c.id CategoryId, c.name CategoryName,
                          (SELECT COUNT(*) FROM product_supply s WHERE s.category_id=c.id AND s.status='ACTIVE') SupplyCount,
@@ -133,6 +136,8 @@ public class DashboardService
         await EnsureAdminAsync(conn, operatorId);
         return await CachedAsync("dash:region", async () =>
         {
+            // 注意: parent_id=3 为"息县"的固定 ID (历史约定, 迁移后如改变需同步)。
+            // DealAmount 经 quote→supply 定位乡镇, 与 GetOverviewAsync 按订单归属的成交口径存在差异, 属已知口径偏差。
             var rows = await conn.QueryAsync<(long TownId, string TownName, long SupplyCount, long DemandCount, decimal DealAmount)>(
                 @"SELECT r.id TownId, r.region_name TownName,
                          (SELECT COUNT(*) FROM product_supply s WHERE s.town_id=r.id AND s.status='ACTIVE') SupplyCount,

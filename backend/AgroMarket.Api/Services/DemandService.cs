@@ -1,3 +1,4 @@
+using System.Data;
 using AgroMarket.Api.Common;
 using Dapper;
 
@@ -33,6 +34,7 @@ public class DemandService
         public string? PackagingNote { get; set; }
         public string? ContactName { get; set; }
         public string? ContactPhone { get; set; }
+        public bool Negotiable { get; set; }
         public string Status { get; set; } = "";
         public DateTime CreatedAt { get; set; }
     }
@@ -42,7 +44,7 @@ public class DemandService
                c.name CategoryName, d.description, d.quantity, d.unit, d.price_min PriceMin, d.price_max PriceMax,
                d.price_unit PriceUnit, d.spec_required SpecRequired, d.county_id CountyId, d.town_id TownId, d.village_id VillageId,
                d.expect_date ExpectDate, d.packaging_note PackagingNote, d.contact_name ContactName,
-               d.contact_phone ContactPhone, d.status, d.created_at CreatedAt
+               d.contact_phone ContactPhone, d.negotiable Negotiable, d.status, d.created_at CreatedAt
         FROM purchase_demand d
         JOIN sys_user u ON u.id = d.publisher_id
         JOIN product_category c ON c.id = d.category_id
@@ -56,6 +58,12 @@ public class DemandService
         JOIN product_category c ON c.id = d.category_id
         WHERE 1=1 {0}";
 
+    private const string QuoteCountSql = @"
+        SELECT q.demand_id DemandId, COUNT(*) QuoteCount
+        FROM trade_quote q
+        WHERE q.demand_id IN @ids AND q.status NOT IN ('REJECTED','CLOSED')
+        GROUP BY q.demand_id";
+
     public async Task<Dtos.PagedResult<Dtos.DemandDto>> QueryAsync(Dtos.DemandQuery q, long viewerId = 0, bool admin = false)
     {
         if (q.Status == "MINE")
@@ -68,7 +76,12 @@ public class DemandService
         if (q.PageSize is < 1 or > 50) q.PageSize = 10;
         var w = new List<string>();
         var p = new DynamicParameters();
-        if (!string.IsNullOrWhiteSpace(q.Keyword)) { w.Add("d.title LIKE @kw"); p.Add("kw", $"%{q.Keyword.Trim()}%"); }
+        if (!string.IsNullOrWhiteSpace(q.Keyword))
+        {
+            // 标题 / 描述 / 品类名 任一命中
+            w.Add("(d.title LIKE @kw OR d.description LIKE @kw OR c.name LIKE @kw)");
+            p.Add("kw", $"%{q.Keyword.Trim()}%");
+        }
         if (q.CategoryId != null) { w.Add("(d.category_id=@cat OR c.parent_id=@cat)"); p.Add("cat", q.CategoryId); }
         if (q.PriceMin != null) { w.Add("d.price_max >= @pmin"); p.Add("pmin", q.PriceMin); }
         if (q.PriceMax != null) { w.Add("d.price_min <= @pmax"); p.Add("pmax", q.PriceMax); }
@@ -97,24 +110,48 @@ public class DemandService
         p.Add("limit", q.PageSize); p.Add("offset", (q.Page - 1) * q.PageSize);
         var orderBy = q.OrderBy switch
         {
-            "price_asc" => "d.price_min ASC, d.id DESC",
-            "price_desc" => "d.price_max DESC, d.id DESC",
+            // 区间报价统一按最低价升序/降序, 避免区间两端语义混乱
+            "price_asc" => "COALESCE(d.price_min, 99999999.99) ASC, d.id DESC",
+            "price_desc" => "COALESCE(d.price_min, 0) DESC, d.id DESC",
             "quantity" => "d.quantity DESC, d.id DESC",
             _ => "d.created_at DESC, d.id DESC",
         };
+        // 用户常驻乡镇优先置顶(软排序, 不过滤)
+        if (q.PreferTownId != null)
+        {
+            orderBy = "(d.town_id=@ptown) DESC, " + orderBy;
+            p.Add("ptown", q.PreferTownId);
+        }
         using var conn = _db.Create();
         var total = await conn.ExecuteScalarAsync<long>(string.Format(CountSql, where), p);
         var rows = (await conn.QueryAsync<DemandRow>(string.Format(SelectSql, where, orderBy), p)).ToList();
-        var items = new List<Dtos.DemandDto>();
+        var items = await AttachAsync(conn, rows);
+        return new Dtos.PagedResult<Dtos.DemandDto>(items, total, q.Page, q.PageSize);
+    }
+
+    private async Task<List<Dtos.DemandDto>> AttachAsync(IDbConnection conn, List<DemandRow> rows)
+    {
+        if (rows.Count == 0) return new();
+        var ids = rows.Select(r => r.Id).ToList();
+        var imgs = (await conn.QueryAsync<(long DemandId, long Id, string Url)>(
+            "SELECT demand_id, id, url FROM product_image WHERE demand_id IN @ids ORDER BY sort_order, id",
+            new { ids })).GroupBy(i => i.DemandId).ToDictionary(g => g.Key, g => g.ToList());
+        var qcnt = new Dictionary<long, int>();
+        foreach (var g in await conn.QueryAsync<(long DemandId, int QuoteCount)>(QuoteCountSql, new { ids }))
+            qcnt[g.DemandId] = g.QuoteCount;
+        var result = new List<Dtos.DemandDto>();
         foreach (var r in rows)
         {
             var (cName, tName, _) = await _regions.GetRegionNamesAsync(r.CountyId, r.TownId, r.VillageId);
-            items.Add(new Dtos.DemandDto(r.Id, r.PublisherId, r.PublisherName, r.Title, r.CategoryId, r.CategoryName,
+            imgs.TryGetValue(r.Id, out var imgList);
+            result.Add(new Dtos.DemandDto(r.Id, r.PublisherId, r.PublisherName, r.Title, r.CategoryId, r.CategoryName,
                 r.Description, r.Quantity, r.Unit, r.PriceMin, r.PriceMax, r.PriceUnit, r.SpecRequired,
                 r.CountyId, cName, r.TownId, tName, r.VillageId, r.ExpectDate, r.PackagingNote,
-                r.ContactName, null, r.Status, r.CreatedAt));
+                r.ContactName, null, r.Status, r.CreatedAt, r.Negotiable,
+                qcnt.TryGetValue(r.Id, out var qc) ? qc : 0,
+                (imgList ?? new()).Select(i => new Dtos.DemandImageDto(i.Id, i.Url)).ToList()));
         }
-        return new Dtos.PagedResult<Dtos.DemandDto>(items, total, q.Page, q.PageSize);
+        return result;
     }
 
     public async Task<Dtos.DemandDto> GetByIdAsync(long id, long? viewerId)
@@ -126,11 +163,8 @@ public class DemandService
         var phoneVisible = viewerId != null && (viewerId == r.PublisherId || isAdmin);
         if (r.Status != "ACTIVE" && !phoneVisible)
             throw new BizException("采购需求不存在", ErrorCodes.NotFound);
-        var (cName, tName, _) = await _regions.GetRegionNamesAsync(r.CountyId, r.TownId, r.VillageId);
-        return new Dtos.DemandDto(r.Id, r.PublisherId, r.PublisherName, r.Title, r.CategoryId, r.CategoryName,
-            r.Description, r.Quantity, r.Unit, r.PriceMin, r.PriceMax, r.PriceUnit, r.SpecRequired,
-            r.CountyId, cName, r.TownId, tName, r.VillageId, r.ExpectDate, r.PackagingNote,
-            r.ContactName, phoneVisible ? r.ContactPhone : null, r.Status, r.CreatedAt);
+        var dto = (await AttachAsync(conn, new List<DemandRow> { r }))[0];
+        return dto with { ContactPhone = phoneVisible ? r.ContactPhone : null };
     }
 
     public async Task<long> CreateAsync(long userId, Dtos.DemandCreateRequest req)
@@ -140,41 +174,66 @@ public class DemandService
         await _regions.ValidateRegionAsync(req.TownId, req.CountyId, 4);
         await _regions.ValidateRegionAsync(req.VillageId, req.TownId, 5);
         using var conn = _db.Create();
-        return await conn.ExecuteScalarAsync<long>(@"
+        conn.Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            var id = await conn.ExecuteScalarAsync<long>(@"
             INSERT INTO purchase_demand (publisher_id, title, category_id, description, quantity, unit, price_min, price_max,
                 price_unit, spec_required, county_id, town_id, village_id, expect_date, packaging_note, contact_name,
-                contact_phone, status, effective_days, expire_at)
+                contact_phone, negotiable, status, effective_days, expire_at)
             VALUES (@pub, @title, @cat, @desc, @qty, @unit, @pmin, @pmax, @punit, @spec, @county, @town, @village,
-                @expect, @pack, @cname, @cphone, 'PENDING', @days, DATE_ADD(NOW(3), INTERVAL @days DAY));
+                @expect, @pack, @cname, @cphone, @nego, 'PENDING', @days, DATE_ADD(NOW(3), INTERVAL @days DAY));
             SELECT LAST_INSERT_ID();",
             new { pub = userId, req.Title, cat = req.CategoryId, desc = req.Description, qty = req.Quantity, req.Unit,
                 pmin = req.PriceMin, pmax = req.PriceMax, punit = req.PriceUnit, spec = req.SpecRequired,
                 county = req.CountyId, town = req.TownId, village = req.VillageId, expect = req.ExpectDate, pack = req.PackagingNote,
-                cname = req.ContactName, cphone = req.ContactPhone, days = req.EffectiveDays });
+                cname = req.ContactName, cphone = req.ContactPhone, nego = req.Negotiable, days = req.EffectiveDays }, tx);
+            if (req.Images is { Count: > 0 })
+                await conn.ExecuteAsync(
+                    "INSERT INTO product_image (demand_id, url, sort_order) VALUES (@did, @url, @i)",
+                    req.Images.Take(9).Select((url, i) => new { did = id, url, i }), tx);
+            tx.Commit();
+            return id;
+        }
+        catch { tx.Rollback(); throw; }
     }
 
     public async Task UpdateAsync(long userId, long id, Dtos.DemandCreateRequest req)
     {
-        using var conn = _db.Create();
-        var isAdmin = await conn.ExecuteScalarAsync<bool>("SELECT role='ADMIN' FROM sys_user WHERE id=@id", new { id = userId });
-        var owner = await conn.ExecuteScalarAsync<long?>("SELECT publisher_id FROM purchase_demand WHERE id=@id", new { id });
+        using var conn0 = _db.Create();
+        var isAdmin = await conn0.ExecuteScalarAsync<bool>("SELECT role='ADMIN' FROM sys_user WHERE id=@id", new { id = userId });
+        var owner = await conn0.ExecuteScalarAsync<long?>("SELECT publisher_id FROM purchase_demand WHERE id=@id", new { id });
         if (owner == null) throw new BizException("采购需求不存在", ErrorCodes.NotFound);
         if (owner != userId && !isAdmin) throw new BizException("无权修改他人的采购需求", ErrorCodes.Forbidden);
         Validate(req);
         await _regions.ValidateRegionAsync(req.CountyId, null, 3);
         await _regions.ValidateRegionAsync(req.TownId, req.CountyId, 4);
         await _regions.ValidateRegionAsync(req.VillageId, req.TownId, 5);
-        var affected = await conn.ExecuteAsync(@"
+        using var conn = _db.Create();
+        conn.Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            var affected = await conn.ExecuteAsync(@"
             UPDATE purchase_demand SET title=@title, category_id=@cat, description=@desc, quantity=@qty, unit=@unit,
                 price_min=@pmin, price_max=@pmax, price_unit=@punit, spec_required=@spec, county_id=@county, town_id=@town,
                 village_id=@village, expect_date=@expect, packaging_note=@pack, contact_name=@cname, contact_phone=@cphone,
-                effective_days=@days, expire_at=DATE_ADD(NOW(3), INTERVAL @days DAY), status='PENDING'
+                negotiable=@nego, effective_days=@days, expire_at=DATE_ADD(NOW(3), INTERVAL @days DAY), status='PENDING'
             WHERE id=@id",
             new { req.Title, cat = req.CategoryId, desc = req.Description, qty = req.Quantity, req.Unit, pmin = req.PriceMin,
                 pmax = req.PriceMax, punit = req.PriceUnit, spec = req.SpecRequired, county = req.CountyId, town = req.TownId,
                 village = req.VillageId, expect = req.ExpectDate, pack = req.PackagingNote, cname = req.ContactName,
-                cphone = req.ContactPhone, days = req.EffectiveDays, id });
-        if (affected == 0) throw new BizException("更新失败");
+                cphone = req.ContactPhone, nego = req.Negotiable, days = req.EffectiveDays, id }, tx);
+            if (affected == 0) throw new BizException("更新失败");
+            await conn.ExecuteAsync("DELETE FROM product_image WHERE demand_id=@id", new { id }, tx);
+            if (req.Images is { Count: > 0 })
+                await conn.ExecuteAsync(
+                    "INSERT INTO product_image (demand_id, url, sort_order) VALUES (@did, @url, @i)",
+                    req.Images.Take(9).Select((url, i) => new { did = id, url, i }), tx);
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
     }
 
     public async Task ChangeStatusAsync(long userId, long id, string action)
