@@ -5,11 +5,25 @@
         <view class="detail-title">{{ item.title }}</view>
         <view class="price-big mt16">{{ demandPrice }}</view>
         <view class="mt8 muted">需求数量：{{ item.quantity }}{{ item.unit }}</view>
+        <view v-if="item.quoteCount > 0" class="mt8 muted">已有 {{ item.quoteCount }} 条报价</view>
         <view class="mt16">
           <text class="tag">{{ item.categoryName || '农产品' }}</text>
+          <text v-if="item.negotiable" class="tag">价格可议</text>
           <text v-if="item.expectDate" class="tag">期望 {{ fmtDate(item.expectDate) }}</text>
           <text v-if="item.status !== 'ACTIVE'" class="tag">{{ item.status }}</text>
         </view>
+      </view>
+      <view v-if="item.images && item.images.length" class="card">
+        <scroll-view scroll-x class="img-scroll">
+          <image
+            v-for="(img, i) in item.images"
+            :key="img.id || i"
+            :src="img.url"
+            class="gallery-img"
+            mode="aspectFill"
+            @tap="previewImg(i)"
+          />
+        </scroll-view>
       </view>
       <view class="card">
         <view class="between"><text class="field-label">交货地</text><text>{{ (item.countyName || '息县') }} {{ item.townName || '' }} {{ item.villageName || '' }}</text></view>
@@ -64,6 +78,7 @@
 <script>
 import { demandApi, quoteApi, chatApi } from '../../api/index'
 import { requireLogin, getUser } from '../../utils/request'
+import { requestSubscribe } from '../../utils/subscribe'
 import { reportTarget } from '../../utils/report'
 
 export default {
@@ -132,6 +147,7 @@ export default {
       if (!price || price <= 0) return uni.showToast({ title: '请输入有效单价', icon: 'none' })
       if (!quantity || quantity <= 0) return uni.showToast({ title: '请输入有效数量', icon: 'none' })
       try {
+        requestSubscribe('QUOTE')
         await quoteApi.create({ demandId: this.item.id, price, priceUnit: this.item.priceUnit, quantity, remark: this.quoteForm.remark })
         uni.showToast({ title: '报价已提交' })
         this.showQuote = false
@@ -141,12 +157,20 @@ export default {
     callPhone() { if (this.item.contactPhone) uni.makePhoneCall({ phoneNumber: this.item.contactPhone }) },
     report() { reportTarget('DEMAND', this.item.id, '举报该采购信息') },
     fmtDate(d) { return (d || '').slice(0, 10) },
+    previewImg(i) {
+      uni.previewImage({ urls: this.item.images.map(x => x.url), current: i })
+    },
   },
 }
 </script>
 
 <style>
 .detail-title { font-size: 36rpx; font-weight: 700; }
+.img-scroll { white-space: nowrap; }
+.gallery-img {
+  display: inline-block; width: 400rpx; height: 400rpx;
+  border-radius: 16rpx; margin-right: 16rpx; background: #f4f6f4;
+}
 .bottom-bar {
   position: fixed; left: 0; right: 0; bottom: 0;
   background: #fff; padding: 16rpx 24rpx;

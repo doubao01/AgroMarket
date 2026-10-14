@@ -6,6 +6,9 @@ public record AiChatRequest(string Message, string? SessionId);
 /// <summary>AI 对话响应。</summary>
 public record AiChatResponse(string Reply, string SessionId, List<string> ToolsUsed, int TotalTokens);
 
+/// <summary>AI 流式事件包。</summary>
+public record AiStreamEvent(string Event, object Data);
+
 /// <summary>AI 会话摘要。</summary>
 public record AiConversationDto(
     long Id, string SessionId, string? Title, int MessageCount, DateTime? LastMessageAt, DateTime CreatedAt);

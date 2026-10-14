@@ -42,7 +42,7 @@ public record SupplyDto(
     string? Description, decimal Quantity, string Unit, decimal? Price, string PriceUnit, bool Negotiable,
     decimal? MinOrderQty, long? CountyId, string? CountyName, long? TownId, string? TownName, long? VillageId, string? VillageName,
     string? Spec, string? HarvestTime, string? DeliveryMode, string? ContactPhone, string? TradeNote,
-    string Status, DateTime CreatedAt, List<SupplyImageDto> Images);
+    string Status, DateTime CreatedAt, List<SupplyImageDto> Images, decimal SoldQuantity);
 public record SupplyQuery(
     string? Keyword, long? CategoryId, decimal? PriceMin, decimal? PriceMax,
     long? CountyId, long? TownId, long? VillageId, bool TownIncludeVillages,
@@ -51,6 +51,8 @@ public record SupplyQuery(
     public int Page { get; set; } = Page;
     public int PageSize { get; set; } = PageSize;
     public long? PublisherId { get; set; } = PublisherId;
+    /// <summary>用户常驻乡镇: 置顶优先展示, 不做硬过滤。</summary>
+    public long? PreferTownId { get; set; }
 }
 public record SupplyCreateRequest(
     string Title, long CategoryId, string? Description, decimal Quantity, string Unit,
@@ -59,12 +61,13 @@ public record SupplyCreateRequest(
     string? DeliveryMode, string? ContactPhone, string? TradeNote, int EffectiveDays, List<string>? Images);
 
 // ---------- 采购 ----------
+public record DemandImageDto(long Id, string Url);
 public record DemandDto(
     long Id, long PublisherId, string PublisherName, string Title, long CategoryId, string? CategoryName,
     string? Description, decimal Quantity, string Unit, decimal? PriceMin, decimal? PriceMax, string PriceUnit,
     string? SpecRequired, long? CountyId, string? CountyName, long? TownId, string? TownName, long? VillageId,
     DateTime? ExpectDate, string? PackagingNote, string? ContactName, string? ContactPhone,
-    string Status, DateTime CreatedAt);
+    string Status, DateTime CreatedAt, bool Negotiable, int QuoteCount, List<DemandImageDto> Images);
 public record DemandQuery(
     string? Keyword, long? CategoryId, decimal? PriceMin, decimal? PriceMax,
     long? CountyId, long? TownId, long? VillageId, bool TownIncludeVillages,
@@ -73,12 +76,14 @@ public record DemandQuery(
     public int Page { get; set; } = Page;
     public int PageSize { get; set; } = PageSize;
     public long? PublisherId { get; set; } = PublisherId;
+    /// <summary>用户常驻乡镇: 置顶优先展示, 不做硬过滤。</summary>
+    public long? PreferTownId { get; set; }
 }
 public record DemandCreateRequest(
     string Title, long CategoryId, string? Description, decimal Quantity, string Unit,
     decimal? PriceMin, decimal? PriceMax, string PriceUnit, string? SpecRequired,
     long? CountyId, long? TownId, long? VillageId, DateTime? ExpectDate, string? PackagingNote,
-    string? ContactName, string? ContactPhone, int EffectiveDays);
+    string? ContactName, string? ContactPhone, int EffectiveDays, bool Negotiable, List<string>? Images);
 
 // ---------- 报价 ----------
 public record QuoteDto(

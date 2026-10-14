@@ -62,10 +62,15 @@ public class ChatService
                ?? throw new BizException("会话不存在", ErrorCodes.NotFound);
     }
 
+    /// <summary>
+    /// 发送一条消息。校验顺序: 成员身份 -> 消息类型/内容合法性 -> 引用消息归属 -> 对方是否存在/是否被拉黑;
+    /// 全部通过后落库并实时广播。clientMsgId 命中唯一键时视为重发, 只回显不重复广播。
+    /// </summary>
     public async Task<ChatMessageDto> SendAsync(long userId, long convId, MessageSendRequest req)
     {
         await EnsureParticipantAsync(convId, userId);
 
+        // --- 消息类型与内容校验 ---
         if (!ChatMessageType.IsValid(req.MessageType) ||
             !ChatMessageType.ClientSendable.Contains(req.MessageType))
             throw new BizException("不支持的消息类型");
@@ -81,25 +86,31 @@ public class ChatService
                 ? u.GetString() : null;
             if (string.IsNullOrWhiteSpace(url)) throw new BizException("图片消息缺少 url");
         }
+        // 引用回复只能引用本会话内的消息
         if (req.ReplyToMessageId is > 0 &&
             !await _repo.MessageBelongsToConversationAsync(req.ReplyToMessageId.Value, convId))
             throw new BizException("引用的消息不存在");
 
+        // --- 对方可达性校验 (存在且双方未互相拉黑) ---
         var peerId = await _repo.FindPeerIdAsync(convId, userId);
         if (peerId is null)
             throw new BizException("会话对方不存在", ErrorCodes.NotFound);
         if (await _repo.IsBlockedEitherAsync(userId, peerId.Value))
             throw new BizException("消息发送失败", ErrorCodes.Forbidden);
 
+        // --- 落库并广播 ---
+        // payload 统一转成 JSON 文本存储; Null/Undefined 视为无 payload。
         var payload = req.Payload is { ValueKind: not JsonValueKind.Null and not JsonValueKind.Undefined }
             ? req.Payload.Value.GetRawText()
             : null;
 
-        var row = await _repo.SendMessageAsync(
+        var (row, isNew) = await _repo.SendMessageAsync(
             convId, userId, req.ClientMsgId, req.MessageType, content, payload, req.BizType, req.BizId, req.ReplyToMessageId);
 
         var dto = MapMessage(row);
-        await _realtime.NotifyMessageAsync(convId, dto, userId);
+        // 幂等重发(clientMsgId 命中唯一键)时不再广播, 否则对方未读会被重复累加。
+        if (isNew)
+            await _realtime.NotifyMessageAsync(convId, dto, userId);
         return dto;
     }
 
@@ -231,7 +242,7 @@ public class ChatService
         if (!ChatMessageType.IsValid(messageType))
             throw new BizException("不支持的消息类型");
         var json = payload is null ? null : JsonSerializer.Serialize(payload, JsonOpts);
-        var row = await _repo.SendMessageAsync(
+        var (row, _) = await _repo.SendMessageAsync(
             convId, senderId, null, messageType, content, json, bizType, bizId, null);
         var dto = MapMessage(row);
         await _realtime.NotifyMessageAsync(convId, dto, senderId);
@@ -247,13 +258,6 @@ public class ChatService
         if (await _repo.IsBlockedEitherAsync(userId, peerId))
             throw new BizException("对方不可联系", ErrorCodes.Forbidden);
         return peerId;
-    }
-
-    public async Task<ChatConversationDto> GetConversationAsync(long userId, long convId)
-    {
-        await EnsureParticipantAsync(convId, userId);
-        return await _repo.GetConversationForUserAsync(convId, userId)
-               ?? throw new BizException("会话不存在", ErrorCodes.NotFound);
     }
 
     public async Task UpdateSettingsAsync(long userId, long convId, ConversationSettingsRequest req)
