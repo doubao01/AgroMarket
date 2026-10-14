@@ -109,14 +109,13 @@ export default {
     }
   },
   onLoad(query) {
-    if (query.tab === 'demand') this.tab = 'demand'
-    else {
-      // 首页「更多」经 switchTab 进入时通过 storage 传 tab
-      const pending = uni.getStorageSync('market_tab')
-      if (pending) {
-        this.tab = pending
-        uni.removeStorageSync('market_tab')
-      }
+    // market 是 tabBar 页, switchTab 无法带参, 首页「更多」用 storage 传 tab (见 applyPendingTab)
+    if (query.tab === 'supply' || query.tab === 'demand') {
+      // 深链显式指定, 丢弃可能遗留的「更多」请求
+      this.tab = query.tab
+      uni.removeStorageSync('market_tab')
+    } else {
+      this.applyPendingTab()
     }
     const loc = getLocation()
     this.townId = loc ? loc.townId : null
@@ -128,15 +127,18 @@ export default {
     this.loadCategories()
   },
   onShow() {
+    // tabBar 页二次进入只触发 onShow(不触发 onLoad), 故「更多」切 tab 的消费必须放在这里
+    const tabChanged = this.applyPendingTab()
     const loc = getLocation()
-    if (!sameLocation(loc, { townId: this.townId, villageId: this.villageId })) {
+    const locChanged = !sameLocation(loc, { townId: this.townId, villageId: this.villageId })
+    if (locChanged) {
       this.townId = loc ? loc.townId : null
       this.villageId = loc ? (loc.villageId || null) : null
       this.villageName = loc ? (loc.villageName || '') : ''
       this.townLabel = getTownLabel(loc)
       this.locMode = 'prefer'
-      this.reload()
     }
+    if (tabChanged || locChanged) this.reload()
   },
   onPullDownRefresh() {
     this.reload().finally(() => uni.stopPullDownRefresh())
@@ -162,6 +164,18 @@ export default {
       if (this.tab === t) return
       this.tab = t
       this.reload()
+    },
+    // 消费首页「更多」写入的 pending tab; 返回是否发生了切换 (供 onShow 决定是否 reload)
+    applyPendingTab() {
+      const pending = uni.getStorageSync('market_tab')
+      if (pending !== 'supply' && pending !== 'demand') {
+        if (pending) uni.removeStorageSync('market_tab') // 清理非法脏值
+        return false
+      }
+      uni.removeStorageSync('market_tab')
+      if (pending === this.tab) return false
+      this.tab = pending
+      return true
     },
     setSort(o) {
       this.orderBy = o
