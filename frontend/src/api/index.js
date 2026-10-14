@@ -205,6 +205,7 @@ export const dashboardApi = {
 
 export const aiApi = {
   chat: (data) => http.post('/api/ai/chat', data, { auth: true }),
+  streamChat: (data, handlers) => streamChatRequest(data, handlers),
   conversations: (query) => http.get('/api/ai/conversations', query || {}, { auth: true }),
   messages: (id, query) => http.get(`/api/ai/conversations/${id}/messages`, query || {}, { auth: true }),
   removeConversation: (id) => http.del('/api/ai/conversations/' + id, {}, { auth: true }),
@@ -212,6 +213,108 @@ export const aiApi = {
   assistPublish: (data) => http.post('/api/ai/assist/publish', data, { auth: true }),
   insight: () => http.post('/api/ai/insight', {}, { auth: true }),
   ask: (question) => http.post('/api/ai/ask', { question }, { auth: true }),
+}
+
+function parseSseBlock(block, handlers) {
+  if (!block || !block.trim()) return
+  let event = 'message'
+  let dataStr = ''
+  const lines = block.split('\n')
+  for (const line of lines) {
+    if (line.indexOf('event:') === 0) event = line.slice(6).trim()
+    else if (line.indexOf('data:') === 0) dataStr += line.slice(5).trim()
+  }
+  if (!dataStr) return
+  let payload
+  try { payload = JSON.parse(dataStr) } catch (e) { payload = dataStr }
+  if (event === 'status' && handlers.onStatus) handlers.onStatus(payload.text || payload)
+  else if (event === 'delta' && handlers.onDelta) handlers.onDelta(payload.text || payload)
+  else if (event === 'done' && handlers.onDone) handlers.onDone(payload)
+  else if (event === 'error' && handlers.onError) handlers.onError(payload)
+}
+
+function decodeUtf8(bytes) {
+  if (typeof TextDecoder !== 'undefined') return new TextDecoder().decode(bytes)
+  let out = ''
+  for (let i = 0; i < bytes.length;) {
+    const c = bytes[i++]
+    if (c < 128) out += String.fromCharCode(c)
+    else if (c > 191 && c < 224) out += String.fromCharCode(((c & 31) << 6) | (bytes[i++] & 63))
+    else if (c > 223 && c < 240) out += String.fromCharCode(((c & 15) << 12) | ((bytes[i++] & 63) << 6) | (bytes[i++] & 63))
+    else out += String.fromCharCode(((c & 7) << 18) | ((bytes[i++] & 63) << 12) | ((bytes[i++] & 63) << 6) | (bytes[i++] & 63))
+  }
+  return out
+}
+
+function streamChatRequest(data, handlers = {}) {
+  // #ifdef H5
+  return new Promise(async (resolve, reject) => {
+    try {
+      const resp = await fetch(apiBase() + '/api/ai/chat/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeader(),
+        },
+        body: JSON.stringify(data),
+      })
+      if (!resp.ok) {
+        const text = await resp.text()
+        const err = { msg: text || '请求失败' }
+        if (handlers.onError) handlers.onError(err)
+        return reject(err)
+      }
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split('\n\n')
+        buffer = blocks.pop()
+        for (const b of blocks) parseSseBlock(b, handlers)
+      }
+      resolve()
+    } catch (e) {
+      if (handlers.onError) handlers.onError(e)
+      reject(e)
+    }
+  })
+  // #endif
+
+  // #ifndef H5
+  return new Promise((resolve, reject) => {
+    let buffer = ''
+    const req = uni.request({
+      url: apiBase() + '/api/ai/chat/stream',
+      method: 'POST',
+      header: {
+        'Content-Type': 'application/json',
+        ...authHeader(),
+      },
+      data,
+      enableChunked: true,
+      success: () => resolve(),
+      fail: (err) => {
+        if (handlers.onError) handlers.onError(err)
+        reject(err)
+      },
+    })
+    req.onChunkReceived((res) => {
+      let text = ''
+      if (res.data instanceof ArrayBuffer) {
+        text = decodeUtf8(new Uint8Array(res.data))
+      } else if (typeof res.data === 'string') {
+        text = res.data
+      }
+      buffer += text
+      const blocks = buffer.split('\n\n')
+      buffer = blocks.pop()
+      for (const b of blocks) parseSseBlock(b, handlers)
+    })
+  })
+  // #endif
 }
 
 function apiBase() {
