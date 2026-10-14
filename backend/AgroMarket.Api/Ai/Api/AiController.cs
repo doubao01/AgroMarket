@@ -30,6 +30,38 @@ public class AiController : ControllerBase
     public async Task<ActionResult<ApiResponse<AiChatResponse>>> Chat([FromBody] AiChatRequest req, CancellationToken ct)
         => Ok(ApiResponse<AiChatResponse>.Ok(await _chat.ChatAsync(Uid, req, ct)));
 
+    /// <summary>AI 客服/农事助手对话(SSE 流式响应)。</summary>
+    [HttpPost("chat/stream")]
+    public async Task ChatStream([FromBody] AiChatRequest req, CancellationToken ct)
+    {
+        Response.ContentType = "text/event-stream; charset=utf-8";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers["X-Accel-Buffering"] = "no";
+
+        var uid = Uid;
+        try
+        {
+            await _chat.StreamChatAsync(uid, req, async evt =>
+            {
+                var json = System.Text.Json.JsonSerializer.Serialize(evt.Data);
+                await Response.WriteAsync($"event: {evt.Event}\ndata: {json}\n\n", ct);
+                await Response.Body.FlushAsync(ct);
+            }, ct);
+        }
+        catch (BizException ex)
+        {
+            var err = System.Text.Json.JsonSerializer.Serialize(new { message = ex.Message, code = ex.Code });
+            await Response.WriteAsync($"event: error\ndata: {err}\n\n", ct);
+            await Response.Body.FlushAsync(ct);
+        }
+        catch (Exception)
+        {
+            var err = System.Text.Json.JsonSerializer.Serialize(new { message = "AI 服务异常, 请稍后重试", code = ErrorCodes.ServerError });
+            await Response.WriteAsync($"event: error\ndata: {err}\n\n", ct);
+            await Response.Body.FlushAsync(ct);
+        }
+    }
+
     /// <summary>当前用户的 AI 会话列表。</summary>
     [HttpGet("conversations")]
     public async Task<ActionResult<ApiResponse<AiConversationPageDto>>> Conversations(
