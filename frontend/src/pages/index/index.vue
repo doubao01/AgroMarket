@@ -23,11 +23,11 @@
         <view class="quick-icon">🛒</view>
         <text class="quick-text">发布采购</text>
       </view>
-      <view class="quick-item" @tap="go('/pages/market/index?tab=supply')">
+      <view class="quick-item" @tap="goMarketTab('supply')">
         <view class="quick-icon">📦</view>
         <text class="quick-text">供应大厅</text>
       </view>
-      <view class="quick-item" @tap="go('/pages/market/index?tab=demand')">
+      <view class="quick-item" @tap="goMarketTab('demand')">
         <view class="quick-icon">📋</view>
         <text class="quick-text">采购大厅</text>
       </view>
@@ -42,10 +42,10 @@
       </swiper>
     </view>
 
-    <view v-if="banners.length" class="banner-wrap container">
+    <view v-if="visibleBanners.length" class="banner-wrap container">
       <swiper class="banner-swiper" circular autoplay interval="4000">
-        <swiper-item v-for="b in banners" :key="b.id">
-          <image :src="b.imageUrl" class="banner-img" mode="aspectFill" @tap="openBanner(b)" />
+        <swiper-item v-for="b in visibleBanners" :key="b.id">
+          <image :src="b.imageUrl" class="banner-img" mode="aspectFill" @tap="openBanner(b)" @error="brokenBanners[b.id] = true" />
         </swiper-item>
       </swiper>
     </view>
@@ -130,12 +130,16 @@ export default {
   data() {
     return {
       supplies: [], demands: [], notices: [], banners: [], hotPosts: [],
+      brokenBanners: {},
       loadingSupplies: false, loadingDemands: false,
       showRegion: false,
       townId: null, villageId: null, villageName: '', townLabel: '全部乡镇',
     }
   },
   onShow() { this.syncLocation(); this.load() },
+  computed: {
+    visibleBanners() { return this.banners.filter((b) => !this.brokenBanners[b.id]) },
+  },
   methods: {
     syncLocation() {
       const loc = getLocation()
