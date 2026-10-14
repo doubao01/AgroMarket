@@ -1,3 +1,4 @@
+using System.Text;
 using AgroMarket.Api.Ai.Domain;
 using AgroMarket.Api.Ai.Dtos;
 using AgroMarket.Api.Ai.Infrastructure;
@@ -124,6 +125,131 @@ public class AiChatService
 
         return new AiChatResponse(reply, conv.SessionId, distinctTools, totalTokens);
     }
+
+    /// <summary>流式对话 (SSE 事件: status, delta, done)。</summary>
+    public async Task StreamChatAsync(
+        long userId,
+        AiChatRequest req,
+        Func<AiStreamEvent, Task> onEvent,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(req.Message))
+            throw new BizException("消息内容不能为空");
+        AiRateLimiter.EnsureLength(req.Message, MaxInputLength, "消息");
+
+        _limiter.Check(userId, RateLimitPerMinute);
+
+        AiConversationRow? conv = null;
+        var history = new List<ChatMessage>();
+        if (!string.IsNullOrWhiteSpace(req.SessionId))
+        {
+            var existing = await _repo.GetBySessionAsync(req.SessionId.Trim());
+            if (existing is not null)
+            {
+                if (existing.UserId != userId)
+                    throw new BizException("无权访问该会话", ErrorCodes.Forbidden);
+                conv = existing;
+                history = await LoadHistoryAsync(conv.Id);
+            }
+        }
+
+        var messages = new List<ChatMessage> { ChatMessage.System(SystemPrompt) };
+        messages.AddRange(history);
+        messages.Add(ChatMessage.User(req.Message));
+
+        var toolsUsed = new List<string>();
+        var replyBuilder = new StringBuilder();
+
+        for (var round = 0; round <= MaxToolRounds; round++)
+        {
+            var roundToolCalls = new List<ToolCall>();
+            await foreach (var chunk in _llm.StreamAsync(messages, _tools.Definitions, ct))
+            {
+                if (!string.IsNullOrEmpty(chunk.ContentDelta))
+                {
+                    replyBuilder.Append(chunk.ContentDelta);
+                    await onEvent(new AiStreamEvent("delta", new { text = chunk.ContentDelta }));
+                }
+
+                if (chunk.ToolCalls is { Count: > 0 })
+                {
+                    roundToolCalls.AddRange(chunk.ToolCalls);
+                }
+            }
+
+            if (roundToolCalls.Count == 0)
+            {
+                break;
+            }
+
+            messages.Add(ChatMessage.Assistant(null, roundToolCalls));
+            foreach (var call in roundToolCalls)
+            {
+                toolsUsed.Add(call.Name);
+                await onEvent(new AiStreamEvent("status", new { text = GetToolLabel(call.Name) }));
+
+                string result;
+                if (_tools.TryGet(call.Name, out var tool))
+                {
+                    try
+                    {
+                        result = await tool.InvokeAsync(userId, call.ArgumentsJson, ct);
+                    }
+                    catch (Exception ex)
+                    {
+                        result = $"{{\"error\":\"{ex.Message}\"}}";
+                    }
+                }
+                else
+                {
+                    result = "{\"error\":\"未知工具\"}";
+                }
+                messages.Add(ChatMessage.Tool(call.Id, call.Name, result));
+            }
+        }
+
+        var reply = replyBuilder.ToString();
+        if (string.IsNullOrWhiteSpace(reply))
+        {
+            reply = "抱歉, 我暂时无法回答这个问题, 请换个说法或咨询客服。";
+            await onEvent(new AiStreamEvent("delta", new { text = reply }));
+        }
+
+        if (conv is null)
+        {
+            var sid = string.IsNullOrWhiteSpace(req.SessionId)
+                ? Guid.NewGuid().ToString("N")
+                : req.SessionId!.Trim();
+            conv = await _repo.CreateAsync(userId, sid);
+        }
+
+        var distinctTools = toolsUsed.Distinct().ToList();
+        var toolsJson = distinctTools.Count > 0
+            ? System.Text.Json.JsonSerializer.Serialize(distinctTools)
+            : null;
+        await _repo.AppendTurnAsync(conv.Id, req.Message, reply, toolsJson, 0,
+            BuildTitle(req.Message));
+
+        await onEvent(new AiStreamEvent("done", new
+        {
+            sessionId = conv.SessionId,
+            convId = conv.Id,
+            title = BuildTitle(req.Message),
+            reply,
+            toolsUsed = distinctTools,
+        }));
+    }
+
+    private static string GetToolLabel(string toolName) => toolName switch
+    {
+        "get_platform_stats" => "正在查询平台供需与成交概况...",
+        "get_trade_trend" => "正在分析近期交易走势...",
+        "get_region_distribution" => "正在检索息县乡镇供需分布...",
+        "search_demands" => "正在检索最新采购需求...",
+        "search_supplies" => "正在检索在售农产品供应...",
+        "get_my_orders" => "正在检索您的订单与交易记录...",
+        _ => "正在检索平台实时数据...",
+    };
 
     // ---------------- 会话管理 ----------------
 
