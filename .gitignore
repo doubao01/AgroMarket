@@ -180,3 +180,6 @@
 *.lz
 *.lzma
 *.iso
+
+# Local development secrets (DB connection, JWT secret, AI ApiKey)
+backend/AgroMarket.Api/appsettings.Development.json
