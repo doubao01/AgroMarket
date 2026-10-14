@@ -253,7 +253,7 @@ export default {
       try { uni.setStorageSync('dash_dark', this.dark ? 1 : 0) } catch (e) {}
     },
     roleLabel(r) {
-      const map = { ADMIN: '管理员', FARMER: '农户', BUYER: '采购商', COOP: '合作社' }
+      const map = { ADMIN: '管理员', FARMER: '农户', BUYER: '采购商', COOP: '合作社', ENTERPRISE: '企业' }
       return map[r] || r
     },
     async loadInsight() {
