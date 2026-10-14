@@ -125,6 +125,9 @@ import { supplyApi, demandApi, noticeApi, bannerApi, communityApi } from '../../
 import RegionPicker from '../../components/region-picker.vue'
 import { getLocation, setLocation, getTownLabel } from '../../utils/location'
 
+// tabBar 页面必须用 switchTab 打开, navigateTo 会静默失败 (与 pages.json tabBar.list 保持一致)
+const TAB_PAGES = ['/pages/index/index', '/pages/market/index', '/pages/chat/list', '/pages/user/index']
+
 export default {
   components: { RegionPicker },
   data() {
@@ -189,10 +192,16 @@ export default {
     goMarket() { uni.switchTab({ url: '/pages/market/index' }) },
     openBanner(b) {
       if (b.linkType === 'PAGE' && b.linkValue) {
-        if (b.linkValue.indexOf('/pages/market/index') === 0) {
+        const path = b.linkValue.split('?')[0]
+        if (path === '/pages/market/index') {
           const m = (b.linkValue.match(/tab=(supply|demand)/) || [])[1]
           this.goMarketTab(m || 'supply')
-        } else uni.navigateTo({ url: b.linkValue })
+        } else if (TAB_PAGES.indexOf(path) >= 0) {
+          // 站内链接指向 tabBar 页时必须用 switchTab, 否则 navigateTo 静默失败
+          uni.switchTab({ url: path })
+        } else {
+          uni.navigateTo({ url: b.linkValue })
+        }
       }
       // #ifdef H5
       else if (b.linkType === 'URL' && b.linkValue) window.open(b.linkValue)
