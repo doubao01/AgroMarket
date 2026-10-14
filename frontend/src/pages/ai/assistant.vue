@@ -34,7 +34,13 @@
       <view v-for="(m, i) in messages" :key="i" :id="'m' + i" class="msg" :class="m.role">
         <view class="bubble">{{ m.content }}</view>
       </view>
-      <view v-if="sending" class="msg assistant"><view class="bubble typing">正在思考...</view></view>
+      <view v-if="sending" id="streaming-anchor" class="msg assistant">
+        <view class="bubble" :class="{ typing: !streamingReply }">
+          <text v-if="streamingReply">{{ streamingReply }}</text>
+          <text v-else>{{ streamingStatus || '正在思考...' }}</text>
+          <text v-if="streamingReply" class="cursor">▍</text>
+        </view>
+      </view>
       <view id="bottom-anchor" style="height: 20rpx"></view>
     </scroll-view>
 
@@ -55,6 +61,8 @@ export default {
       messages: [],
       text: '',
       sending: false,
+      streamingReply: '',
+      streamingStatus: '',
       sessionId: '',
       convId: 0,
       currentTitle: '',
@@ -155,7 +163,10 @@ export default {
       this.messages.push({ role: 'user', content })
       this.text = ''
       this.sending = true
-      try {
+      this.streamingReply = ''
+      this.streamingStatus = ''
+
+      const fallbackChat = async () => {
         const res = await aiApi.chat({ message: content, sessionId: this.sessionId || undefined })
         this.sessionId = res.sessionId
         this.messages.push({ role: 'assistant', content: res.reply })
@@ -165,10 +176,46 @@ export default {
           const first = (list.items || [])[0]
           if (first) { this.convId = first.id; this.currentTitle = first.title || this.currentTitle }
         }
+      }
+
+      try {
+        let streamSucceeded = false
+        let streamFailed = false
+        await aiApi.streamChat(
+          { message: content, sessionId: this.sessionId || undefined },
+          {
+            onStatus: (text) => { this.streamingStatus = text },
+            onDelta: (text) => { this.streamingReply += text },
+            onDone: async (p) => {
+              streamSucceeded = true
+              this.sessionId = p.sessionId
+              this.convId = p.convId || this.convId
+              if (p.title && !this.currentTitle) this.currentTitle = p.title
+              this.messages.push({ role: 'assistant', content: p.reply })
+            },
+            onError: () => { streamFailed = true },
+          }
+        )
+        // 流式中断但已收到部分答案时保留已生成内容, 不丢弃重问。
+        if ((streamFailed || !streamSucceeded) && this.streamingReply) {
+          this.messages.push({ role: 'assistant', content: this.streamingReply })
+        } else if (streamFailed || !streamSucceeded) {
+          await fallbackChat()
+        }
       } catch (e) {
-        this.messages.push({ role: 'assistant', content: (e && e.msg) || 'AI 服务暂不可用' })
+        if (this.streamingReply) {
+          this.messages.push({ role: 'assistant', content: this.streamingReply })
+        } else {
+          try {
+            await fallbackChat()
+          } catch (e2) {
+            this.messages.push({ role: 'assistant', content: (e2 && e2.msg) || 'AI 服务暂不可用' })
+          }
+        }
       } finally {
         this.sending = false
+        this.streamingReply = ''
+        this.streamingStatus = ''
       }
     },
     fmtTime(t) {
@@ -212,6 +259,8 @@ export default {
 .msg.user .bubble { background: #2e8b57; color: #fff; border-top-right-radius: 4rpx; }
 .msg.assistant .bubble { background: #fff; color: #22322a; border-top-left-radius: 4rpx; }
 .bubble.typing { color: #a7b3ac; }
+.cursor { color: #2e8b57; animation: blink 1s infinite; }
+@keyframes blink { 50% { opacity: 0; } }
 .input-bar { display: flex; align-items: center; padding: 16rpx 24rpx; background: #fff; padding-bottom: calc(16rpx + env(safe-area-inset-bottom)); }
 .input { flex: 1; background: #f0f3f1; border-radius: 12rpx; padding: 18rpx 22rpx; font-size: 28rpx; }
 .send-btn { margin-left: 16rpx; background: #2e8b57; color: #fff; font-size: 28rpx; }

@@ -1,4 +1,5 @@
 using AgroMarket.Api.Common;
+using AgroMarket.Api.Notifications;
 using Dapper;
 
 namespace AgroMarket.Api.Services;
@@ -6,21 +7,14 @@ namespace AgroMarket.Api.Services;
 public class MessageService
 {
     private readonly IDbConnectionFactory _db;
-    public MessageService(IDbConnectionFactory db) => _db = db;
+    private readonly NotificationPushService _push;
+    public MessageService(IDbConnectionFactory db, NotificationPushService push) { _db = db; _push = push; }
 
-    public async Task SendAsync(long receiverId, long? senderId, string msgType, string title, string? content, long? bizId = null)
+    public async Task<long> SendAsync(long receiverId, long? senderId, string msgType, string title, string? content, long? bizId = null)
     {
-        try
-        {
-            using var conn = _db.Create();
-            await conn.ExecuteAsync(
-                "INSERT INTO user_message (receiver_id, sender_id, msg_type, title, content, biz_id) VALUES (@r, @s, @t, @ti, @c, @b)",
-                new { r = receiverId, s = senderId, t = msgType, ti = title, c = content, b = bizId });
-        }
-        catch (Exception)
-        {
-            // 消息发送失败不阻断主流程
-        }
+        // 统一走推送门面: 落库 + WS 在线扇出 + 微信订阅消息(异步尽力), 失败不阻断主流程
+        try { return await _push.NotifyAsync(receiverId, senderId, msgType, title, content, bizId); }
+        catch { return 0; }
     }
 
     public async Task<Dtos.PagedResult<Dtos.MessageDto>> QueryAsync(long userId, string? box, int page, int pageSize)

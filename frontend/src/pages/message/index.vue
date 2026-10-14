@@ -6,9 +6,9 @@
     </view>
     <view class="container">
       <view v-if="!loading && !items.length" class="empty">暂无消息</view>
-      <view v-for="m in items" :key="m.id" class="card" :class="{ unread: !m.isRead }" @tap="open(m)">
+      <view v-for="m in items" :key="m.id" class="card" :class="{ unread: !m.isRead, alert: m.msgType === 'ALERT' }" @tap="open(m)">
         <view class="between">
-          <text class="msg-title">{{ m.title }}</text>
+          <text class="msg-title" :class="{ 'alert-title': m.msgType === 'ALERT' }">{{ m.msgType === 'ALERT' ? '⚠ ' : '' }}{{ m.title }}</text>
           <text class="muted">{{ fmt(m.createdAt) }}</text>
         </view>
         <view class="muted mt8">{{ m.content }}</view>
@@ -20,11 +20,19 @@
 <script>
 import { messageApi } from '../../api/index'
 import { requireLogin } from '../../utils/request'
+import { onChatEvent } from '../../utils/chat-store'
 
 export default {
-  data() { return { items: [], unread: 0, loading: false } },
+  data() { return { items: [], unread: 0, loading: false, _offNotify: null } },
   onLoad() { if (!requireLogin()) return },
-  onShow() { if (requireLogin()) this.reload() },
+  onShow() {
+    if (!requireLogin()) return
+    this.reload()
+    // 收到 WS notify 帧时实时刷新列表与未读数
+    this._offNotify = onChatEvent('notify', () => this.reload())
+  },
+  onHide() { if (this._offNotify) { this._offNotify(); this._offNotify = null } },
+  onUnload() { if (this._offNotify) { this._offNotify(); this._offNotify = null } },
   onPullDownRefresh() { this.reload().finally(() => uni.stopPullDownRefresh()) },
   methods: {
     async reload() {
@@ -55,4 +63,6 @@ export default {
 .container { padding: 24rpx; }
 .msg-title { font-size: 30rpx; font-weight: 600; }
 .card.unread { border-left: 8rpx solid #2e8b57; }
+.card.alert { border-left: 8rpx solid #e6a23c; background: #fdf6ec; }
+.alert-title { color: #e6a23c; }
 </style>

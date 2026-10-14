@@ -105,6 +105,7 @@
 <script>
 import { supplyApi, categoryApi, uploadImageSmart, aiApi } from '../../api/index'
 import { requireLogin } from '../../utils/request'
+import { requestSubscribe } from '../../utils/subscribe'
 import { getLocation } from '../../utils/location'
 import RegionPicker from '../../components/region-picker.vue'
 
@@ -273,6 +274,7 @@ export default {
       }
       this.submitting = true
       try {
+        if (!this.editId) requestSubscribe('AUDIT')
         if (this.editId) await supplyApi.update(this.editId, payload)
         else await supplyApi.create(payload)
         uni.showToast({ title: this.editId ? '已更新，等待审核' : '已提交，等待审核' })

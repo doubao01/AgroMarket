@@ -290,7 +290,13 @@ export default {
     merge(list) {
       const map = {}
       this.messages.concat(list).forEach((m) => { if (m && m.id != null) map[m.id] = m })
-      this.messages = Object.keys(map).map((k) => map[k]).sort((a, b) => a.id - b.id)
+      // 乐观消息(未落库, id 为负数)排到末尾并保持时间顺序, 其余按 id 升序。
+      this.messages = Object.keys(map).map((k) => map[k]).sort((a, b) => {
+        const ap = a._pending ? 1 : 0, bp = b._pending ? 1 : 0
+        if (ap !== bp) return ap - bp
+        if (a._pending && b._pending) return a.createdAt > b.createdAt ? 1 : -1
+        return a.id - b.id
+      })
     },
     async doSearch() {
       const kw = (this.searchKeyword || '').trim()
@@ -499,10 +505,16 @@ export default {
           if (act === 'accept') this.actQuote(m, 'accept')
           else if (act === 'reject') this.actQuote(m, 'reject')
           else if (act === 'counter') this.counterQuote(m)
-          else if (act === 'order') uni.navigateTo({ url: '/pages/quote/list' })
+          else if (act === 'order') this.goQuoteOrder(m)
           else uni.navigateTo({ url: '/pages/quote/list' })
         },
       })
+    },
+    // 报价已接受后, 买家进入报价详情页填写收货信息并创建订单 (旧实现只跳到报价列表, 无法下单)。
+    goQuoteOrder(m) {
+      const p = m.payload || {}
+      if (p.quoteId) uni.navigateTo({ url: '/pages/quote/detail?id=' + p.quoteId })
+      else uni.navigateTo({ url: '/pages/quote/list' })
     },
     async actQuote(m, action) {
       const p = m.payload || {}
