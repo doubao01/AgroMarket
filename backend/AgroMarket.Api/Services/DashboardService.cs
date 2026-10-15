@@ -175,14 +175,15 @@ public class DashboardService
         await EnsureAdminAsync(conn, operatorId);
         return await CachedAsync($"dash:usertrend:{days}", async () =>
         {
+            // 同日新增与活跃用两次 LEFT JOIN 造成笛卡尔积, 计数必须 DISTINCT。
             var rows = await conn.QueryAsync<(string Date, long NewUsers, long ActiveUsers)>(
                 @"WITH RECURSIVE d AS (
                        SELECT CURDATE() - INTERVAL @d-1 DAY AS dt
                        UNION ALL SELECT dt + INTERVAL 1 DAY FROM d WHERE dt < CURDATE()
                    )
                    SELECT DATE_FORMAT(d.dt,'%Y-%m-%d') Date,
-                          COUNT(u.id) NewUsers,
-                          COUNT(u2.id) ActiveUsers
+                          COUNT(DISTINCT u.id) NewUsers,
+                          COUNT(DISTINCT u2.id) ActiveUsers
                    FROM d
                    LEFT JOIN sys_user u ON DATE(u.created_at)=d.dt
                    LEFT JOIN sys_user u2 ON DATE(u2.last_login_at)=d.dt
