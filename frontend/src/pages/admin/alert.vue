@@ -49,7 +49,7 @@
 
 <script>
 import { alertApi } from '../../api/index'
-import { requireLogin } from '../../utils/request'
+import { requireLogin, getUser } from '../../utils/request'
 
 const RULE_META = {
   ORDER_PAY_TIMEOUT: { name: '订单超时未支付', desc: '买家下单后超过阈值时长仍未支付，提醒买方与平台。', thresholdKey: 'hours', thresholdLabel: '超时时长（小时）' },
@@ -77,7 +77,14 @@ export default {
   computed: {
     ruleFilterLabels() { return ['全部规则', ...RULE_ORDER.map((c) => RULE_META[c].name)] },
   },
-  onLoad() { if (!requireLogin()) return },
+  onLoad() {
+    if (!requireLogin()) return
+    const me = getUser()
+    if (!me || me.role !== 'ADMIN') {
+      uni.showToast({ title: '需要管理员权限', icon: 'none' })
+      return setTimeout(() => uni.navigateBack(), 800)
+    }
+  },
   onShow() { if (requireLogin()) this.loadAll() },
   onPullDownRefresh() { this.loadAll().finally(() => uni.stopPullDownRefresh()) },
   methods: {

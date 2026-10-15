@@ -106,7 +106,7 @@
           <text v-else class="mini" @tap="setPostStatus(p, 'ACTIVE')">恢复展示</text>
         </view>
       </view>
-      <view v-if="posts.length" class="load-more muted" @tap="loadPosts(true)">加载更多</view>
+      <view v-if="posts.length && postHasMore" class="load-more muted" @tap="loadPosts(true)">加载更多</view>
     </view>
 
     <!-- 操作日志 -->
@@ -124,7 +124,7 @@
         </view>
         <view class="muted mt8">{{ logDetail(l) }}</view>
       </view>
-      <view v-if="logs.length" class="load-more muted" @tap="loadLogs(true)">加载更多</view>
+      <view v-if="logs.length && logHasMore" class="load-more muted" @tap="loadLogs(true)">加载更多</view>
     </view>
   </view>
 </template>
@@ -140,8 +140,8 @@ export default {
       users: [], userKw: '',
       notices: [], noticeForm: { title: '', content: '' }, publishing: false,
       banners: [], bannerForm: { title: '', imageUrl: '', linkValue: '', sortOrder: 0 }, bannerLinkTypeIndex: 0,
-      posts: [], postPage: 1,
-      logs: [], logPage: 1, logModules: ['全部模块', 'USER', 'SUPPLY', 'DEMAND', 'ORDER', 'AUTH', 'REPORT'], logModuleIndex: 0,
+      posts: [], postPage: 1, postHasMore: false,
+      logs: [], logPage: 1, logHasMore: false, logModules: ['全部模块', 'USER', 'SUPPLY', 'DEMAND', 'ORDER', 'AUTH', 'REPORT'], logModuleIndex: 0,
     }
   },
   onLoad() {
@@ -201,10 +201,12 @@ export default {
     },
     async loadPosts(more) {
       try {
-        const res = await communityAdminApi.posts({ page: more ? this.postPage + 1 : 1, pageSize: 20 })
+        const page = more ? this.postPage : 1
+        const res = await communityAdminApi.posts({ page, pageSize: 20 })
         const items = (res && res.items) || []
         this.posts = more ? this.posts.concat(items) : items
-        if (items.length >= 20) this.postPage += 1
+        this.postHasMore = items.length >= 20
+        if (this.postHasMore) this.postPage = page + 1
       } catch (e) { if (!more) this.posts = [] }
     },
     async setPostStatus(p, status) {
@@ -263,10 +265,12 @@ export default {
     async loadLogs(more) {
       try {
         const module = this.logModuleIndex > 0 ? this.logModules[this.logModuleIndex] : undefined
-        const res = await adminApi.logs({ module, page: this.logPage, pageSize: 20 })
+        const page = more ? this.logPage : 1
+        const res = await adminApi.logs({ module, page, pageSize: 20 })
         const items = (res && res.items) || []
         this.logs = more ? this.logs.concat(items) : items
-        if (items.length >= 20) this.logPage += 1
+        this.logHasMore = items.length >= 20
+        if (this.logHasMore) this.logPage = page + 1
       } catch (e) { if (!more) this.logs = [] }
     },
     userStatusText(s) { return { ACTIVE: '正常', FROZEN: '已冻结' }[s] || s || '' },
