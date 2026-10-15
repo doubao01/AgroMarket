@@ -182,8 +182,8 @@ export default {
   onLoad() {
     try { this.dark = uni.getStorageSync('dash_dark') === 1 } catch (e) {}
     this.loadAll()
-    this.autoTimer = setInterval(() => { this.loadAll(true) }, 30000)
   },
+  onShow() { this.startAuto() },
   onHide() { this.stopAuto() },
   onUnload() { this.stopAuto() },
   onPullDownRefresh() {
@@ -191,6 +191,11 @@ export default {
   },
   methods: {
     stopAuto() { if (this.autoTimer) { clearInterval(this.autoTimer); this.autoTimer = null } },
+    // onHide 会清除定时器, tabBar/路由返回重新进入只触发 onShow, 需在此重启保证 30s 自动刷新
+    startAuto() {
+      this.stopAuto()
+      this.autoTimer = setInterval(() => { this.loadAll(true) }, 30000)
+    },
     async loadAll(silent) {
       if (!silent) this.loading = true
       try {
