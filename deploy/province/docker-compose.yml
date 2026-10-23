@@ -11,6 +11,8 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-agro_market}
       MYSQL_USER: ${MYSQL_USER:-agromarket}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      # 演示账号(公开口令)默认不加载; 生产必须保持 0
+      SEED_DEMO: "${SEED_DEMO:-0}"
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--default-authentication-plugin=mysql_native_password"]
     volumes:
       - db_data:/var/lib/mysql
@@ -38,6 +40,14 @@ services:
       Jwt__SecretKey: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is required (>=32 bytes)}
       Jwt__ExpireHours: "168"
       Sms__DevMode: "false"
+      Sms__Provider: "${SMS_PROVIDER:-None}"
+      Sms__Aliyun__AccessKeyId: ${SMS_ALIYUN_KEY_ID:-}
+      Sms__Aliyun__AccessKeySecret: ${SMS_ALIYUN_KEY_SECRET:-}
+      Sms__Aliyun__SignName: ${SMS_ALIYUN_SIGN_NAME:-}
+      Sms__Aliyun__TemplateCode: ${SMS_ALIYUN_TEMPLATE_CODE:-}
+      # 首个管理员(库里无 ADMIN 时创建), 替代原来的公开口令演示账号
+      Bootstrap__AdminPhone: ${BOOTSTRAP_ADMIN_PHONE:-}
+      Bootstrap__AdminPassword: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       Payment__MockEnabled: "${PAYMENT_MOCK_ENABLED:-false}"
       CorsOrigins__0: ${CORS_ORIGIN:-http://localhost:5173}
       # ---- 联动: 省级 = 汇聚只读 ----

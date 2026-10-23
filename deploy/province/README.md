@@ -23,9 +23,11 @@ curl -fsS http://localhost:8080/health    # 站点存活(公开)；节点探测 
 
 ```bash
 # 1) 管理员登录拿 token
+#    账号来自部署时设置的 BOOTSTRAP_ADMIN_PHONE / BOOTSTRAP_ADMIN_PASSWORD(见 .env.example);
+#    生产库不再内置任何公开口令账号, 演示账号仅在 SEED_DEMO=1 时写入
 TOKEN=$(curl -s http://localhost:8080/api/auth/login/password \
   -H 'Content-Type: application/json' \
-  -d '{"phone":"13800000001","password":"Abc123456"}' | jq -r .data.token)
+  -d "{\"phone\":\"$BOOTSTRAP_ADMIN_PHONE\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r .data.token)
 
 # 2) 登记一个市级对端（baseUrl 为市级节点对省级可达的地址）
 curl -s http://localhost:8080/api/admin/federation/nodes \

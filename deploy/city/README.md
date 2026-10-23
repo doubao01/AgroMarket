@@ -21,9 +21,10 @@ curl -fsS http://localhost:8080/health    # 站点存活(公开)；节点探测 
 县级节点同样需要把市级登记为对端（对端间 baseUrl 互相可达）。
 
 ```bash
+# 账号来自部署时设置的 BOOTSTRAP_ADMIN_PHONE / BOOTSTRAP_ADMIN_PASSWORD 与 .env 中的 ADMIN_PASSWORD
 TOKEN=$(curl -s http://localhost:8080/api/auth/login/password \
   -H 'Content-Type: application/json' \
-  -d '{"phone":"13800000001","password":"Abc123456"}' | jq -r .data.token)
+  -d "{\"phone\":\"$BOOTSTRAP_ADMIN_PHONE\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r .data.token)
 
 curl -s http://localhost:8080/api/admin/federation/nodes \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

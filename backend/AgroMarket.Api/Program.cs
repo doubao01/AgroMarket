@@ -45,6 +45,21 @@ builder.Services.AddScoped<MessageService>();
 builder.Services.AddScoped<FavoriteService>();
 builder.Services.AddScoped<AddressService>();
 builder.Services.AddScoped<AdminService>();
+builder.Services.AddScoped<AgroMarket.Api.Services.AdminBootstrapper>();
+
+// 短信渠道: Dev(仅开发) / Aliyun(生产) / 未配置(明确失败)。
+// 早期实现在生产直接抛占位异常, 导致注册与短信登录 100% 不可用。
+builder.Services.AddHttpClient();
+if (builder.Configuration.GetValue<bool>("Sms:DevMode"))
+    builder.Services.AddScoped<AgroMarket.Api.Services.Sms.ISmsSender, AgroMarket.Api.Services.Sms.DevSmsSender>();
+else if (string.Equals(builder.Configuration["Sms:Provider"], "Aliyun", StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddScoped<AgroMarket.Api.Services.Sms.ISmsSender>(sp =>
+        new AgroMarket.Api.Services.Sms.AliyunSmsSender(
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient(),
+            sp.GetRequiredService<ILogger<AgroMarket.Api.Services.Sms.AliyunSmsSender>>()));
+else
+    builder.Services.AddScoped<AgroMarket.Api.Services.Sms.ISmsSender, AgroMarket.Api.Services.Sms.UnconfiguredSmsSender>();
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<CommunityService>();
 builder.Services.AddSingleton<StorageService>();
@@ -191,6 +206,14 @@ app.UseStatusCodePages(async context =>
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// 首个管理员初始化: 库里没有 ADMIN 且配了 Bootstrap__AdminPhone/Password 时创建。
+// 测试账号已从 02_seed.sql 移到 99_demo_seed.sql(默认不执行), 生产不再有公开口令账号。
+using (var scope = app.Services.CreateScope())
+{
+    try { await scope.ServiceProvider.GetRequiredService<AgroMarket.Api.Services.AdminBootstrapper>().RunAsync(); }
+    catch (Exception ex) { app.Logger.LogError(ex, "admin bootstrap failed"); }
+}
 
 // 健康检查
 app.MapGet("/health", () => Results.Text("ok"));

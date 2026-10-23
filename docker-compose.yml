@@ -8,6 +8,9 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-agro_market}
       MYSQL_USER: ${MYSQL_USER:-agromarket}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change_me_db_password}
+      # 99_demo_seed.sql 含公开口令的测试账号, 默认不加载。
+      # 本地演示可设为 1, 生产必须保持 0/不设置。
+      SEED_DEMO: "${SEED_DEMO:-0}"
     command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci", "--default-authentication-plugin=mysql_native_password"]
     volumes:
       - db_data:/var/lib/mysql
@@ -35,6 +38,14 @@ services:
       Jwt__SecretKey: ${JWT_SECRET_KEY:?JWT_SECRET_KEY is required (>=32 bytes)}
       Jwt__ExpireHours: "168"
       Sms__DevMode: "false"
+      Sms__Provider: "${SMS_PROVIDER:-None}"
+      Sms__Aliyun__AccessKeyId: ${SMS_ALIYUN_KEY_ID:-}
+      Sms__Aliyun__AccessKeySecret: ${SMS_ALIYUN_KEY_SECRET:-}
+      Sms__Aliyun__SignName: ${SMS_ALIYUN_SIGN_NAME:-}
+      Sms__Aliyun__TemplateCode: ${SMS_ALIYUN_TEMPLATE_CODE:-}
+      # 首个管理员: 库里没有 ADMIN 时按这两个变量创建, 不再使用演示账号的公开口令
+      Bootstrap__AdminPhone: ${BOOTSTRAP_ADMIN_PHONE:-}
+      Bootstrap__AdminPassword: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       Payment__MockEnabled: "${PAYMENT_MOCK_ENABLED:-false}"
       Payment__Wechat__AppId: ${WECHAT_APP_ID:-}
       Payment__Wechat__MchId: ${WECHAT_MCH_ID:-}

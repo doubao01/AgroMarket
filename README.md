@@ -85,7 +85,12 @@ cd backend
 dotnet run --project AgroMarket.Tests
 ```
 
-## 测试账号（开发环境预置）
+## 测试账号（仅本地开发）
+
+这些账号定义在 `database/99_demo_seed.sql`，**默认不加载**：
+
+- 本地开发：`database/reset_db.bat`（或 `_tools/reset_db.bat`）会显式执行它
+- Docker：只有设置 `SEED_DEMO=1` 才会执行
 
 | 手机号 | 密码 | 角色 |
 |--------|------|------|
@@ -93,6 +98,9 @@ dotnet run --project AgroMarket.Tests
 | 13800000002 | Abc123456 | 农户（FARMER） |
 | 13800000003 | Abc123456 | 采购商（BUYER） |
 | 13800000004 | Abc123456 | 合作社（COOP） |
+
+> 这些口令是公开的，**生产环境绝不能加载**。生产首个管理员由环境变量初始化：
+> `BOOTSTRAP_ADMIN_PHONE` / `BOOTSTRAP_ADMIN_PASSWORD`（库中已有 ADMIN 时跳过）。
 
 开发环境短信验证码为随机码，会打印在后端日志中（`[DEV-SMS]`）。
 
