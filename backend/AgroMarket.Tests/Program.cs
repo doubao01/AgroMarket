@@ -246,6 +246,25 @@ if (supplyId > 0 && sellerToken.Length > 0 && buyerToken.Length > 0)
                         if (p.TryGetProperty("channel", out var ch) && ch.GetString() == "MOCK"
                             && p.GetProperty("status").GetString() == "SUCCESS") hasMock = true;
                 Check("订单支付记录渠道为 MOCK/SUCCESS", hasMock);
+
+                // 支付记录条数必须是 1: 早期实现每次点支付都插一条 INIT, 同一订单能刷出多张可支付单,
+                // 付两次也无人发现
+                var payCount = Data(pays).ValueKind == JsonValueKind.Array ? Data(pays).GetArrayLength() : -1;
+                Check("同一订单只有一条支付记录(无重复可支付单)", payCount == 1, $"count={payCount}");
+
+                // 重复点支付必须幂等: 不新增记录, 不重复写状态流转
+                for (var i = 0; i < 3; i++)
+                    await Call(HttpMethod.Post, "/api/payments", new { orderId = oid, channel = "MOCK", clientToken = "dup-" + i }, buyerToken);
+                var (_, pays2) = await Call(HttpMethod.Get, $"/api/payments/order/{oid}", null, buyerToken);
+                var payCount2 = Data(pays2).ValueKind == JsonValueKind.Array ? Data(pays2).GetArrayLength() : -1;
+                Check("重复发起支付不产生新支付记录", payCount2 == 1, $"count={payCount2}");
+
+                // 已支付订单绝不能被超时任务关闭(否则钱已收 + 单已取消 + 无退款)
+                var (cls, _) = await Call(HttpMethod.Post, "/api/admin/orders/close-expired", null, adminToken);
+                var (_, odAfter) = await Call(HttpMethod.Get, $"/api/orders/{oid}", null, buyerToken);
+                var stAfter3 = Data(odAfter).TryGetProperty("status", out var stVar2) ? stVar2.GetString() : "";
+                Check("超时关闭任务不会关闭已支付订单", cls == HttpStatusCode.OK && stAfter3 == "COMPLETED",
+                    $"status={stAfter3}");
             }
         }
     }
