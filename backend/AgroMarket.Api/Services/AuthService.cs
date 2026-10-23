@@ -10,10 +10,12 @@ public class AuthService
     private readonly IConfiguration _cfg;
     private readonly ILogger<AuthService> _logger;
     private readonly LoginThrottle _throttle;
+    private readonly Sms.ISmsSender _sms;
 
-    public AuthService(IDbConnectionFactory db, IConfiguration cfg, ILogger<AuthService> logger, LoginThrottle throttle)
+    public AuthService(IDbConnectionFactory db, IConfiguration cfg, ILogger<AuthService> logger,
+        LoginThrottle throttle, Sms.ISmsSender sms)
     {
-        _db = db; _cfg = cfg; _logger = logger; _throttle = throttle;
+        _db = db; _cfg = cfg; _logger = logger; _throttle = throttle; _sms = sms;
     }
 
     public class UserRow
@@ -57,16 +59,16 @@ public class AuthService
         await conn.ExecuteAsync(
             @"INSERT INTO sys_sms_code (phone, code, purpose, expired_at) VALUES (@p, @c, 'LOGIN', DATE_ADD(NOW(3), INTERVAL 10 MINUTE))",
             new { p = phone, c = code });
-        var devMode = _cfg.GetValue<bool>("Sms:DevMode");
-        if (devMode)
+        // 渠道可插拔: 开发用 Dev 打印, 生产用阿里云短信, 未配置则明确失败。
+        // 早期实现是"生产直接抛 ServerError 占位", 等于注册与短信登录在生产 100% 不可用。
+        var sent = await _sms.SendAsync(phone, code);
+        if (!sent.Ok)
         {
-            _logger.LogInformation("[DEV-SMS] 验证码已生成 phone={Phone} code={Code}", phone, code);
-            Console.WriteLine($"[DEV-SMS] {phone} 的登录验证码: {code}");
-        }
-        else
-        {
-            // 生产环境接入真实短信服务商, 此处预留
-            throw new BizException("未配置真实短信服务商, 请在 appsettings 中开启 Sms:DevMode", ErrorCodes.ServerError);
+            // 发送失败就把这条验证码作废, 避免留下"用户没收到但可用"的记录
+            await conn.ExecuteAsync(
+                "UPDATE sys_sms_code SET is_used=1 WHERE phone=@p AND code=@c AND is_used=0",
+                new { p = phone, c = code });
+            throw new BizException(sent.Error ?? "短信发送失败", ErrorCodes.ServerError);
         }
     }
 
