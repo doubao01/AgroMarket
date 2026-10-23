@@ -454,13 +454,7 @@ public class TradeService
                     new { oid = orderId }, tx);
                 if (paid)
                     throw new BizException("订单已支付, 不能直接取消, 请申请售后或联系管理员退款", ErrorCodes.Conflict);
-                // 释放下单时占用的库存
-                await conn.ExecuteAsync(
-                    @"UPDATE product_supply s
-                      JOIN trade_order_item i ON i.supply_id = s.id
-                      SET s.quantity = s.quantity + i.quantity,
-                          s.status = CASE WHEN s.status = 'SOLD_OUT' THEN 'ACTIVE' ELSE s.status END
-                      WHERE i.order_id = @oid", new { oid = orderId }, tx);
+                await ReleaseStockAsync(conn, tx, orderId);
             }
 
             var timeCol = target switch
@@ -480,6 +474,65 @@ public class TradeService
             var other = isBuyer ? o.SellerId : o.BuyerId;
             await _messages.SendAsync(other, userId, "ORDER", "订单状态更新", $"订单 #{orderId} 状态变更为 {target}{(reason != null ? $", 原因: {reason}" : "")}", orderId);
             return await GetOrderByIdAsync(orderId, userId);
+        }
+        catch
+        {
+            if (tx.Connection != null) tx.Rollback();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 释放下单时占用的库存。只有 supply_id 非空的明细才需要回补(采购需求成交不扣供应库存)。
+    /// 调用方必须已在该订单的行锁事务内, 且已确认订单尚未回补过(取消只能发生一次)。
+    /// </summary>
+    private static async Task ReleaseStockAsync(System.Data.IDbConnection conn, System.Data.IDbTransaction tx, long orderId)
+    {
+        await conn.ExecuteAsync(
+            @"UPDATE product_supply s
+              JOIN trade_order_item i ON i.supply_id = s.id
+              SET s.quantity = s.quantity + i.quantity,
+                  s.status = CASE WHEN s.status = 'SOLD_OUT' THEN 'ACTIVE' ELSE s.status END
+              WHERE i.order_id = @oid", new { oid = orderId }, tx);
+    }
+
+    /// <summary>
+    /// 超时订单自动关闭(后台任务调用)。只处理已被支付之外的两种"卡住"状态:
+    /// PENDING_CONFIRM 卖方久不确认、TO_PAY 买方久不付款。
+    /// 必须在事务内 FOR UPDATE 重读状态: 用户可能同时手动确认/支付, 拿到的最新状态不是待处理态就跳过。
+    /// </summary>
+    /// <returns>true 表示本次调用实际关闭了该订单</returns>
+    public async Task<bool> CancelExpiredAsync(long orderId, string reason)
+    {
+        using var conn = _db.Create();
+        conn.Open();
+        using var tx = conn.BeginTransaction();
+        try
+        {
+            var o = await conn.QueryFirstOrDefaultAsync<(long Id, long BuyerId, long SellerId, string Status)>(
+                "SELECT id, buyer_id, seller_id, status FROM trade_order WHERE id=@id FOR UPDATE",
+                new { id = orderId }, tx);
+            if (o == default) { tx.Rollback(); return false; }
+            if (o.Status is not ("PENDING_CONFIRM" or "TO_PAY")) { tx.Rollback(); return false; }
+            // 已支付的绝不自动取消: 钱在账上, 关闭会产生无退款死局
+            var paid = await conn.ExecuteScalarAsync<bool>(
+                "SELECT EXISTS(SELECT 1 FROM payment_record WHERE order_id=@oid AND status='SUCCESS')",
+                new { oid = orderId }, tx);
+            if (paid) { tx.Rollback(); return false; }
+
+            await ReleaseStockAsync(conn, tx, orderId);
+            await conn.ExecuteAsync(
+                "UPDATE trade_order SET status='CANCELLED', cancelled_at=NOW(3), cancel_reason=@r WHERE id=@id",
+                new { id = orderId, r = reason }, tx);
+            await conn.ExecuteAsync(
+                "INSERT INTO trade_order_status_log (order_id, from_status, to_status, operator_id, note) VALUES (@oid, @from, 'CANCELLED', NULL, @note)",
+                new { oid = orderId, from = o.Status, note = reason }, tx);
+            tx.Commit();
+
+            // senderId 传 null: 系统消息没有发送人, 传 0 会撞外键
+            await _messages.SendAsync(o.BuyerId, null, "ORDER", "订单已自动关闭", $"订单 #{orderId} {reason}, 占用的库存已释放", orderId);
+            await _messages.SendAsync(o.SellerId, null, "ORDER", "订单已自动关闭", $"订单 #{orderId} {reason}, 占用的库存已释放", orderId);
+            return true;
         }
         catch
         {

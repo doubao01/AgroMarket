@@ -97,6 +97,11 @@ builder.Services.AddSingleton<AgroMarket.Api.Notifications.WeChatPushService>();
 builder.Services.AddSingleton<AgroMarket.Api.Notifications.NotificationPushService>();
 builder.Services.AddSingleton<AgroMarket.Api.Notifications.AlertService>();
 builder.Services.AddHostedService<AgroMarket.Api.Notifications.AlertScanWorker>();
+// 订单超时关闭: 下单即扣库存, 没有这个任务弃单会永久占住库存。
+// AddHostedService<T>() 只注册 IHostedService, 不注册 T 本身; 管理端要手动触发,
+// 所以先以具体类型注册单例, 再把同一个实例挂成 HostedService。
+builder.Services.AddSingleton<AgroMarket.Api.Notifications.OrderTimeoutWorker>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AgroMarket.Api.Notifications.OrderTimeoutWorker>());
 
 // Authentication (custom lightweight JWT handler)
 builder.Services.AddAuthentication("Token")

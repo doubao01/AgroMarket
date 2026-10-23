@@ -145,6 +145,18 @@ public class AdminController : ControllerBase
         return Ok(ApiResponse<PagedResult<object>>.Ok(new PagedResult<object>(items, total, page, pageSize)));
     }
 
+    /// <summary>
+    /// 手动触发一轮订单超时关闭(与后台任务同一套逻辑, 有数据库锁互斥)。
+    /// 运维应急用: 后台任务异常或积压时可立即回收库存。
+    /// </summary>
+    [HttpPost("orders/close-expired")]
+    public async Task<ActionResult<ApiResponse<object>>> CloseExpiredOrders()
+    {
+        var worker = HttpContext.RequestServices.GetRequiredService<AgroMarket.Api.Notifications.OrderTimeoutWorker>();
+        var closed = await worker.RunOnceAsync();
+        return Ok(ApiResponse<object>.Ok(new { closed }, $"已关闭 {closed} 个超时订单"));
+    }
+
     public record RemarkRequest(string? Remark);
     public record RegionCreateRequest(string Code, string Name, long? ParentId, int Level);
     public record RegionRenameRequest(string Name);
