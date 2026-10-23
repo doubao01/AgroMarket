@@ -101,6 +101,22 @@ try
 }
 catch (Exception ex) { Check("密码登录", false, ex.Message); }
 
+// 3.1 登录失败频控与账号枚举
+try
+{
+    const string unknown = "13900000000";
+    var firstStatus = HttpStatusCode.OK;
+    for (var i = 0; i < 5; i++)
+    {
+        var (st, _) = await Call(HttpMethod.Post, "/api/auth/login/password", new { phone = unknown, password = "WrongPass1" });
+        if (i == 0) firstStatus = st;
+    }
+    var (lockSt, lockBody) = await Call(HttpMethod.Post, "/api/auth/login/password", new { phone = unknown, password = "WrongPass1" });
+    Check("未注册手机号登录不暴露账号是否存在(401)", firstStatus == HttpStatusCode.Unauthorized, $"status={(int)firstStatus}");
+    Check("连续密码错误触发锁定(429)", lockSt == HttpStatusCode.TooManyRequests && Code(lockBody) == 429, $"status={(int)lockSt}");
+}
+catch (Exception ex) { Check("登录频控", false, ex.Message); }
+
 // 4. 管理员统计（真实成交额与演示成交额区分）
 if (adminToken.Length > 0)
 {
@@ -821,6 +837,11 @@ if (sellerToken.Length > 0 && buyerToken.Length > 0 && adminToken.Length > 0)
                 long otherConv = Code(crossConvBody) == 0 && Data(crossConvBody).TryGetProperty("id", out var oce) ? oce.GetInt64() : 0;
                 var (sCross, _) = await Call(HttpMethod.Post, $"/api/chat/conversations/{otherConv}/quotes/{counterQuoteId}/accept", null, buyerToken);
                 Check("跨会话操作报价被拒绝(403)", sCross == HttpStatusCode.Forbidden, $"code={sCross}");
+
+                // 回归: 会话内的交易对象必须是"对方"发布的, 否则任意会话都能对第三方商品下单
+                var (sCrossOrder, _) = await Call(HttpMethod.Post, $"/api/chat/conversations/{otherConv}/order",
+                    new { supplyId = ctSupplyId, price = unitPrice, priceUnit, quantity = 1m, deliveryMode = "LOGISTICS", addressSnapshot = "集成测试地址" }, buyerToken);
+                Check("会话内对第三方商品下单被拒绝(403)", sCrossOrder == HttpStatusCode.Forbidden, $"status={(int)sCrossOrder}");
 
                 var (_, nqMsg) = await Call(HttpMethod.Get, $"/api/chat/conversations/{ctConv}/messages?limit=50", null, buyerToken);
                 var hasCounterMsg = Data(nqMsg).TryGetProperty("items", out var nArr)
