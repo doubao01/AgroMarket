@@ -70,7 +70,8 @@ public class ChatTradeService
     /// <summary>会话内发起报价: 创建 trade_quote(挂 conversation_id) 并推送 QUOTE 卡片消息。</summary>
     public async Task<QuoteDto> CreateQuoteAsync(long userId, long convId, ChatQuoteRequest req)
     {
-        await _chat.EnsurePeerReachableAsync(userId, convId);
+        var peerId = await _chat.EnsurePeerReachableAsync(userId, convId);
+        await EnsureListingBelongsToPeerAsync(peerId, req.SupplyId, req.DemandId);
         var quote = await _trade.CreateQuoteAsync(userId,
             new QuoteCreateRequest(req.SupplyId, req.DemandId, req.Price, req.PriceUnit, req.Quantity, req.Remark),
             convId);
@@ -116,6 +117,23 @@ public class ChatTradeService
     private static string TitleOf(QuoteDto q) => q.SupplyTitle ?? q.DemandTitle ?? "交易信息";
 
     /// <summary>校验报价确实属于该会话, 防止跨会话操作。</summary>
+    /// <summary>
+    /// 会话内发起交易的对象必须是"对方"发布的: 否则任意用户都能把自己的任意会话当入口,
+    /// 对第三方商品报价/下单 —— 会话里会出现与对方无关的订单卡片, 卖方也被拉进不属于他的上下文。
+    /// </summary>
+    private async Task EnsureListingBelongsToPeerAsync(long peerId, long? supplyId, long? demandId)
+    {
+        if ((supplyId == null) == (demandId == null))
+            throw new BizException("必须选择供应商品或采购需求其一");
+        using var conn = _db.Create();
+        var publisher = supplyId != null
+            ? await conn.ExecuteScalarAsync<long?>("SELECT publisher_id FROM product_supply WHERE id=@id", new { id = supplyId })
+            : await conn.ExecuteScalarAsync<long?>("SELECT publisher_id FROM purchase_demand WHERE id=@id", new { id = demandId });
+        if (publisher == null) throw new BizException("交易对象不存在", ErrorCodes.NotFound);
+        if (publisher.Value != peerId)
+            throw new BizException("只能针对对方发布的信息发起交易", ErrorCodes.Forbidden);
+    }
+
     private async Task EnsureQuoteInConversationAsync(long quoteId, long convId)
     {
         var convOfQuote = await _trade.GetQuoteConversationIdAsync(quoteId);
@@ -141,7 +159,8 @@ public class ChatTradeService
     /// <summary>从聊天直接下单: 生成已接受报价→创建订单→向会话推送 ORDER_CARD。</summary>
     public async Task<OrderDto> CreateOrderAsync(long userId, long convId, ChatOrderRequest req)
     {
-        await _chat.EnsurePeerReachableAsync(userId, convId);
+        var peerId = await _chat.EnsurePeerReachableAsync(userId, convId);
+        await EnsureListingBelongsToPeerAsync(peerId, req.SupplyId, req.DemandId);
         var order = await _trade.CreateDirectOrderAsync(userId,
             req.SupplyId, req.DemandId, req.Price, req.PriceUnit, req.Quantity,
             req.DeliveryMode, req.AddressSnapshot, req.Remark, convId);

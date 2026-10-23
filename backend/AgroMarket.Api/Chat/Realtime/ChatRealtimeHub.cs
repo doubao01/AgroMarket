@@ -30,12 +30,14 @@ public static class ChatRealtimeHub
         }
 
         var cfg = ctx.RequestServices.GetRequiredService<IConfiguration>();
-        var userId = ResolveUserId(ctx, cfg);
-        if (userId is null)
+        var auth = ResolveUserId(ctx, cfg);
+        if (auth is null)
         {
             ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
         }
+        var userId = auth.Value.UserId;
+        var tokenExpiresAt = auth.Value.ExpiresAtUtc;
 
         // 长连接不经过 HTTP 鉴权过滤器, 需在此额外校验账号状态:
         // 冻结/禁用用户即使持有未过期 JWT 也不得建立聊天长连接 (与 AuthHandler 的 ACTIVE 校验保持一致)。
@@ -43,7 +45,7 @@ public static class ChatRealtimeHub
         using (var checkConn = db.Create())
         {
             var status = await checkConn.QuerySingleOrDefaultAsync<string>(
-                "SELECT status FROM sys_user WHERE id=@id", new { id = userId.Value });
+                "SELECT status FROM sys_user WHERE id=@id", new { id = userId });
             if (status != "ACTIVE")
             {
                 ctx.Response.StatusCode = StatusCodes.Status403Forbidden;
@@ -56,18 +58,39 @@ public static class ChatRealtimeHub
         var logger = ctx.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("ChatRealtime");
 
         using var socket = await ctx.WebSockets.AcceptWebSocketAsync();
-        var conn = mgr.Add(userId.Value, socket);
+        var conn = mgr.Add(userId, socket);
         logger.LogInformation("chat ws connected user={UserId}", userId);
 
         try
         {
-            await conn.SendAsync(JsonSerializer.Serialize(new { type = "connected", userId = userId.Value }, Json));
+            await conn.SendAsync(JsonSerializer.Serialize(new { type = "connected", userId }, Json));
 
             var buffer = new byte[8 * 1024];
+            var nextStatusCheck = DateTime.UtcNow.AddMinutes(2);
             while (socket.State == WebSocketState.Open && !ctx.RequestAborted.IsCancellationRequested)
             {
                 var text = await ReceiveTextAsync(socket, buffer, ctx.RequestAborted);
                 if (text is null) break;
+
+                // 握手只校验一次, 长连接可以跨过 token 过期与管理员的冻结操作:
+                // 每帧先做零成本的本地过期判断, 账号状态最多每 2 分钟回查一次(客户端有心跳帧)
+                if (DateTime.UtcNow >= tokenExpiresAt)
+                {
+                    await conn.SendAsync(JsonSerializer.Serialize(
+                        new { type = "error", code = 401, msg = "登录已过期, 请重新登录" }, Json));
+                    await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "token expired", CancellationToken.None);
+                    break;
+                }
+                if (DateTime.UtcNow >= nextStatusCheck)
+                {
+                    nextStatusCheck = DateTime.UtcNow.AddMinutes(2);
+                    if (!await IsUserActiveAsync(db, userId))
+                    {
+                        await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "account inactive", CancellationToken.None);
+                        break;
+                    }
+                }
+
                 await DispatchAsync(conn, chat, logger, text);
             }
         }
@@ -200,7 +223,7 @@ public static class ChatRealtimeHub
 
     private const string ChatMessageTypeText = "TEXT";
 
-    private static long? ResolveUserId(HttpContext ctx, IConfiguration cfg)
+    private static (long UserId, DateTime ExpiresAtUtc)? ResolveUserId(HttpContext ctx, IConfiguration cfg)
     {
         var token = ctx.Request.Query["token"].FirstOrDefault();
         if (string.IsNullOrEmpty(token))
@@ -228,12 +251,25 @@ public static class ChatRealtimeHub
                 ClockSkew = TimeSpan.FromMinutes(1),
             }, out _);
             var id = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            return id != null && long.TryParse(id, out var uid) ? uid : null;
+            if (id == null || !long.TryParse(id, out var uid)) return null;
+            var expRaw = principal.FindFirst("exp")?.Value;
+            var expires = expRaw != null && long.TryParse(expRaw, out var exp)
+                ? DateTimeOffset.FromUnixTimeSeconds(exp).UtcDateTime
+                : DateTime.UtcNow.AddHours(1);
+            return (uid, expires);
         }
         catch { return null; }
     }
 
     /// <summary>读取一条完整文本消息 (处理分片)。连接关闭返回 null。</summary>
+    private static async Task<bool> IsUserActiveAsync(IDbConnectionFactory db, long userId)
+    {
+        using var conn = db.Create();
+        var status = await conn.QuerySingleOrDefaultAsync<string>(
+            "SELECT status FROM sys_user WHERE id=@id", new { id = userId });
+        return status == "ACTIVE";
+    }
+
     /// <summary>单帧上限: 聊天消息正文 ≤2000 字符, 64KB 足够; 超限直接断开, 防止单连接把进程内存打满。</summary>
     private const int MaxFrameBytes = 64 * 1024;
 
