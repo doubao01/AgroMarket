@@ -181,3 +181,6 @@ export function teardownChat() {
 export function getSocket() {
   return socket
 }
+
+// 登录态失效时销毁连接与未读状态(请求层只清 token, 不知道聊天连接的存在)
+uni.$on('auth:expired', teardownChat)

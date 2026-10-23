@@ -34,13 +34,22 @@ export function clearAuth() {
   } catch (e) {}
 }
 
+// 页面同时发多个请求时, 401 会一起到达; 不设标记就会在栈里压入多个登录页
+let loginNavigating = false
+
 function toLogin() {
   clearAuth()
+  // 通知聊天长连接等订阅方销毁状态: 只清 token 会让 WS 与未读角标继续存活
+  try { uni.$emit('auth:expired') } catch (e) {}
+  if (loginNavigating) return
   const pages = getCurrentPages()
   const current = pages.length ? pages[pages.length - 1].route : ''
-  if (current !== 'pages/user/login') {
-    uni.navigateTo({ url: '/pages/user/login' })
-  }
+  if (current === 'pages/user/login') return
+  loginNavigating = true
+  uni.navigateTo({
+    url: '/pages/user/login',
+    complete: () => setTimeout(() => { loginNavigating = false }, 300),
+  })
 }
 
 export function request(options) {

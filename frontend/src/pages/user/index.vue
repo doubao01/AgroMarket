@@ -85,7 +85,7 @@ export default {
       } })
     },
     maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(7) : '' },
-    roleText(r) { return { ADMIN: '平台管理员', FARMER: '农户', COOP: '合作社', BUYER: '采购商', MERCHANT: '商户' }[r] || r },
+    roleText(r) { return { ADMIN: '平台管理员', FARMER: '农户', COOP: '合作社', BUYER: '采购商', ENTERPRISE: '企业', MERCHANT: '商户' }[r] || r },
     auditText(s) { return { PENDING: '审核中', APPROVED: '已认证', REJECTED: '已驳回' }[s] || s },
   },
 }

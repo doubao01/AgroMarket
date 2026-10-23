@@ -19,7 +19,8 @@
           <text v-if="canEdit(it.status)" class="mini" @tap="goEdit(it.id)">编辑</text>
           <text v-if="canOff(it.status)" class="mini" @tap="changeStatus(it.id, 'off_shelf')">下架</text>
           <text v-if="canOn(it.status)" class="mini" @tap="changeStatus(it.id, 're_activate')">上架</text>
-          <text v-if="it.status === 'ACTIVE'" class="mini" @tap="changeStatus(it.id, 'sold_out')">售罄</text>
+          <text v-if="it.status === 'ACTIVE' && tab === 'supply'" class="mini" @tap="changeStatus(it.id, 'sold_out')">售罄</text>
+          <text v-if="it.status === 'ACTIVE' && tab === 'demand'" class="mini" @tap="changeStatus(it.id, 'close')">关闭</text>
         </view>
       </view>
     </view>
