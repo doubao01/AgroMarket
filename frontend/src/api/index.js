@@ -62,7 +62,7 @@ export const paymentApi = {
 }
 
 export const favoriteApi = {
-  list: () => http.get('/api/favorites', {}, { auth: true }),
+  list: (query) => http.get('/api/favorites', query || {}, { auth: true }),
   add: (targetType, targetId) => http.post(`/api/favorites/${targetType}/${targetId}`, {}, { auth: true }),
   remove: (targetType, targetId) => http.del(`/api/favorites/${targetType}/${targetId}`, {}, { auth: true }),
   check: (targetType, targetId) => http.get('/api/favorites/check', { targetType, targetId }, { auth: true }),

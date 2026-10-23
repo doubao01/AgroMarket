@@ -44,7 +44,17 @@ function toLogin() {
 }
 
 export function request(options) {
-  const { url, method = 'GET', data = {}, auth = false, showError = true } = options
+  let { url, method = 'GET', data = {}, auth = false, showError = true } = options
+  // GET 的可选参数若为 undefined/null, uni.request 会序列化成空串(limit=),
+  // 后端 int 绑定空串直接 400。这里统一剔除, 让"不传即不筛选"的语义真正生效。
+  if (method === 'GET' && data && typeof data === 'object' && !Array.isArray(data)) {
+    const clean = {}
+    Object.keys(data).forEach((k) => {
+      const v = data[k]
+      if (v !== undefined && v !== null && v !== '') clean[k] = v
+    })
+    data = clean
+  }
   return new Promise((resolve, reject) => {
     const header = { 'Content-Type': 'application/json' }
     const token = getToken()

@@ -68,7 +68,9 @@ export default {
       codeSent: false,
       submitting: false,
       roleNames: ['农户', '合作社', '采购商', '商户'],
-      roleValues: ['FARMER', 'COOP', 'BUYER', 'MERCHANT'],
+      // 必须与后端 AuthService.RegisterAsync 的 allowedRoles 一致(FARMER/BUYER/COOP/ENTERPRISE),
+      // 旧值 MERCHANT 会被后端判为"注册角色不合法"直接 400
+      roleValues: ['FARMER', 'COOP', 'BUYER', 'ENTERPRISE'],
       roleIndex: 0,
     }
   },

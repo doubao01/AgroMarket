@@ -58,7 +58,11 @@ export default {
         count: 6 - this.form.images.length,
         success: async (res) => {
           for (const path of res.tempFilePaths) {
-            try { this.form.images.push(await uploadImageSmart(path)) } catch (e) {}
+            try {
+              // uploadImageSmart 返回 { url, ... }, 直接把对象塞进 images 会让后端存成 [object Object]
+              const up = await uploadImageSmart(path)
+              if (up && up.url) this.form.images.push(up.url)
+            } catch (e) {}
           }
         },
       })

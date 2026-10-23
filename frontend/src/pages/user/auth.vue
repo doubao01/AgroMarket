@@ -43,7 +43,9 @@ export default {
     return {
       current: null, submitting: false,
       types: ['个人农户', '合作社', '企业/商户'],
-      typeValues: ['PERSON', 'COOP', 'COMPANY'],
+      // 必须与后端 UserService.SubmitAuthAsync 的白名单一致(PERSONAL/COOP/ENTERPRISE),
+      // 旧值 PERSON/COMPANY 会被判"主体类型不合法"直接 400
+      typeValues: ['PERSONAL', 'COOP', 'ENTERPRISE'],
       typeIndex: 0,
       form: { subjectName: '', idNumber: '', licenseUrl: '' },
     }

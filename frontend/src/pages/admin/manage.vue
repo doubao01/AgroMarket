@@ -169,7 +169,10 @@ export default {
       uni.chooseImage({
         count: 1,
         success: async (res) => {
-          try { this.bannerForm.imageUrl = await uploadImageSmart(res.tempFilePaths[0]) } catch (e) {}
+          try {
+            const up = await uploadImageSmart(res.tempFilePaths[0])
+            this.bannerForm.imageUrl = (up && up.url) || ''
+          } catch (e) {}
         },
       })
     },

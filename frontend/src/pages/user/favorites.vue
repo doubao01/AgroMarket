@@ -25,7 +25,12 @@ export default {
   methods: {
     async reload() {
       this.loading = true
-      try { this.items = await favoriteApi.list() } catch (e) {} finally { this.loading = false }
+      try {
+        // /api/favorites 返回分页对象 {items,total,page,pageSize}, 直接赋给数组会渲染出
+        // 4 个 undefined 卡片; 这里统一解包, 并兼容后端将来改回数组的情况
+        const res = await favoriteApi.list({ page: 1, pageSize: 50 })
+        this.items = Array.isArray(res) ? res : (res && res.items) || []
+      } catch (e) {} finally { this.loading = false }
     },
     async remove(f) {
       try {
