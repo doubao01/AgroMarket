@@ -92,6 +92,7 @@ builder.Services.AddHostedService<FederationSyncWorker>();
 
 // 消息推送与报警: WeChat 未配置时自动降级, 不影响业务
 builder.Services.AddHttpClient("wechat", c => c.Timeout = TimeSpan.FromSeconds(15));
+builder.Services.AddSingleton<AgroMarket.Api.Common.LoginThrottle>();
 builder.Services.AddSingleton<AgroMarket.Api.Notifications.WeChatPushService>();
 builder.Services.AddSingleton<AgroMarket.Api.Notifications.NotificationPushService>();
 builder.Services.AddSingleton<AgroMarket.Api.Notifications.AlertService>();

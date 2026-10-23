@@ -9,10 +9,11 @@ public class AuthService
     private readonly IDbConnectionFactory _db;
     private readonly IConfiguration _cfg;
     private readonly ILogger<AuthService> _logger;
+    private readonly LoginThrottle _throttle;
 
-    public AuthService(IDbConnectionFactory db, IConfiguration cfg, ILogger<AuthService> logger)
+    public AuthService(IDbConnectionFactory db, IConfiguration cfg, ILogger<AuthService> logger, LoginThrottle throttle)
     {
-        _db = db; _cfg = cfg; _logger = logger;
+        _db = db; _cfg = cfg; _logger = logger; _throttle = throttle;
     }
 
     public class UserRow
@@ -91,10 +92,15 @@ public class AuthService
 
     public async Task<Dtos.AuthResponse> LoginByPasswordAsync(string phone, string password)
     {
-        var user = await GetUserByPhoneAsync(phone)
-            ?? throw new BizException("用户不存在", ErrorCodes.NotFound);
-        if (user.PasswordHash == null || !Security.VerifyPassword(password, user.PasswordHash))
+        _throttle.EnsureAllowed(phone);
+        var user = await GetUserByPhoneAsync(phone);
+        if (user == null || user.PasswordHash == null || !Security.VerifyPassword(password, user.PasswordHash))
+        {
+            _throttle.OnFailure(phone);
+            // 统一话术: 不再区分"用户不存在"与"密码错误", 否则可用响应差异枚举已注册手机号
             throw new BizException("手机号或密码错误", ErrorCodes.Unauthorized);
+        }
+        _throttle.OnSuccess(phone);
         return await IssueTokenAsync(user);
     }
 

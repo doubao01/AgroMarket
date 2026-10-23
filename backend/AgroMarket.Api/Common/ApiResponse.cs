@@ -13,6 +13,7 @@ public static class ErrorCodes
     public const int Forbidden = 403;
     public const int NotFound = 404;
     public const int Conflict = 409;
+    public const int TooManyRequests = 429;
     public const int ServerError = 500;
     public const int NotImplemented = 501;
 }
