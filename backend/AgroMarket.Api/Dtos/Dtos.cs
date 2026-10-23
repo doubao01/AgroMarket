@@ -166,7 +166,8 @@ public record UploadInitRequest(string FileName, long FileSize);
 public record UploadCompleteRequest(string UploadId);
 
 // ---------- 支付 ----------
-public record PaymentCreateRequest(long OrderId, string? Channel);
+/// <summary>发起支付。ClientToken 为客户端幂等键: 同一次点击重试应复用同一个值, 避免刷出多张可支付单。</summary>
+public record PaymentCreateRequest(long OrderId, string? Channel, string? ClientToken = null);
 public record PaymentDto
 {
     public long Id { get; set; }
