@@ -100,6 +100,7 @@ export default {
       loading: false,
       faved: false,
       showQuote: false,
+      quoting: false,
       quoteForm: { price: '', quantity: '', remark: '' },
       me: null,
     }
@@ -156,10 +157,12 @@ export default {
       } catch (e) {}
     },
     async submitQuote() {
+      if (this.quoting) return // 连点会生成多条相同报价
       const price = Number(this.quoteForm.price)
       const quantity = Number(this.quoteForm.quantity)
       if (!price || price <= 0) return uni.showToast({ title: '请输入有效单价', icon: 'none' })
       if (!quantity || quantity <= 0) return uni.showToast({ title: '请输入有效数量', icon: 'none' })
+      this.quoting = true
       try {
         await quoteApi.create({
           supplyId: this.item.id,
@@ -171,7 +174,7 @@ export default {
         uni.showToast({ title: '报价已提交' })
         this.showQuote = false
         setTimeout(() => uni.navigateTo({ url: '/pages/quote/list' }), 600)
-      } catch (e) {}
+      } catch (e) {} finally { this.quoting = false }
     },
     async toggleFav() {
       if (!requireLogin()) return

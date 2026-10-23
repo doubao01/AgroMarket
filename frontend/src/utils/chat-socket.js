@@ -26,6 +26,7 @@ export function createChatSocket(handlers = {}) {
   let opened = false
   let closed = false
   let retry = 0
+  let gaveUp = false
   let heartbeat = null
 
   const stopHeartbeat = () => { if (heartbeat) { clearInterval(heartbeat); heartbeat = null } }
@@ -37,7 +38,13 @@ export function createChatSocket(handlers = {}) {
   }
 
   const scheduleRetry = () => {
-    if (closed || retry >= 5) return
+    if (closed) return
+    // 连续失败给重连次数封顶, 但必须把"已放弃"告诉上层: 否则 store 里的 socket
+    // 句柄一直非空, initChat 永远提前返回, 用户只能重启应用才能恢复
+    if (retry >= 5) {
+      if (!gaveUp) { gaveUp = true; handlers.onStatus && handlers.onStatus('dead') }
+      return
+    }
     retry += 1
     setTimeout(connect, Math.min(1000 * retry, 8000))
   }
@@ -51,6 +58,7 @@ export function createChatSocket(handlers = {}) {
     task.onOpen(() => {
       opened = true
       retry = 0
+      gaveUp = false
       startHeartbeat()
       handlers.onStatus && handlers.onStatus('open')
     })

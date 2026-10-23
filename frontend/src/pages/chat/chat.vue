@@ -611,7 +611,7 @@ export default {
             price: Number(src.price || 0),
             priceUnit,
             quantity: Number(quantity),
-            deliveryMode: 'LOGISTICS',
+            deliveryMode: 'DELIVERY',
             addressSnapshot: address,
           }
           this.submitTrade('订单已创建', () => chatApi.createOrder(this.convId, data))

@@ -24,7 +24,7 @@
         <view class="between"><text class="field-label">订单号</text><text class="muted">{{ o.orderNo }}</text></view>
         <view class="between mt16"><text class="field-label">买方</text><text>{{ o.buyerName }}</text></view>
         <view class="between mt16"><text class="field-label">卖方</text><text>{{ o.sellerName }}</text></view>
-        <view class="between mt16"><text class="field-label">交付方式</text><text>{{ o.deliveryMode || '—' }}</text></view>
+        <view class="between mt16"><text class="field-label">交付方式</text><text>{{ deliveryText(o.deliveryMode) }}</text></view>
         <view v-if="o.addressSnapshot" class="between mt16"><text class="field-label">交付地址</text><text>{{ o.addressSnapshot }}</text></view>
         <view v-if="o.remark" class="between mt16"><text class="field-label">备注</text><text>{{ o.remark }}</text></view>
         <view v-if="o.cancelReason" class="between mt16"><text class="field-label">取消原因</text><text>{{ o.cancelReason }}</text></view>
@@ -84,6 +84,11 @@ export default {
     },
   },
   methods: {
+    // 交付方式在历史数据里既有枚举也有自由文本(报价页手填), 未知值原样展示
+    deliveryText(m) {
+      if (!m) return '—'
+      return { SELF_PICKUP: '自提', DELIVERY: '送货上门', BOTH: '自提/送货', LOGISTICS: '物流配送' }[m] || m
+    },
     async load() {
       this.loading = true
       try { this.o = await orderApi.detail(this.id) } catch (e) {} finally { this.loading = false }

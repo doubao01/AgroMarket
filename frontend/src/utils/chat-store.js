@@ -135,6 +135,16 @@ function handleIncoming(d) {
   emit('message', d)
 }
 
+// 连接彻底失败后的慢重试(退避 2 分钟), 避免网络恢复后要重启应用
+let reviveTimer = null
+function scheduleRevive() {
+  if (reviveTimer) return
+  reviveTimer = setTimeout(() => {
+    reviveTimer = null
+    if (getToken()) initChat()
+  }, 120000)
+}
+
 /** 已登录则建立常驻连接(幂等)。 */
 export function initChat() {
   if (!getToken()) { teardownChat(); return }
@@ -161,6 +171,12 @@ export function initChat() {
       chatState.connected = s === 'open'
       emit('status', s)
       if (s === 'open') refreshUnread()
+      // 重连次数用尽: 释放句柄, 过一会儿再起一轮(否则本轮结束后永远不会重连)
+      if (s === 'dead') {
+        socket = null
+        connecting = false
+        scheduleRevive()
+      }
     },
   })
   connecting = false
@@ -169,6 +185,7 @@ export function initChat() {
 
 /** 退出登录/失效时销毁连接与状态。 */
 export function teardownChat() {
+  if (reviveTimer) { clearTimeout(reviveTimer); reviveTimer = null }
   if (socket) { socket.close(); socket = null }
   chatState.connected = false
   chatState.activeConversationId = 0

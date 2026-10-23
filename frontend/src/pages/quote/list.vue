@@ -28,8 +28,15 @@ import { requireLogin, getUser } from '../../utils/request'
 
 export default {
   data() { return { scope: 'ALL', items: [], loading: false, me: { id: 0 } } },
-  onLoad() { if (!requireLogin()) return; this.me = getUser() || { id: 0 }; this.reload() },
-  onShow() { if (this.me && this.me.id) this.reload() },
+  onLoad() { this.me = getUser() || { id: 0 }; if (requireLogin()) this.reload() },
+  // 未登录进来会跳登录页, 返回时 onLoad 不会再跑: 只在"登录态由无变有"时补拉一次
+  onShow() {
+    const me = getUser() || { id: 0 }
+    if (!me.id) return
+    const changed = me.id !== this.me.id
+    this.me = me
+    if (changed) this.reload()
+  },
   onPullDownRefresh() { this.reload().finally(() => uni.stopPullDownRefresh()) },
   methods: {
     setScope(s) { this.scope = s; this.reload() },
