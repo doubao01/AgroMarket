@@ -439,13 +439,19 @@ CREATE TABLE IF NOT EXISTS sys_sms_code (
 CREATE TABLE IF NOT EXISTS payment_record (
   id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   order_id   BIGINT UNSIGNED NOT NULL,
-  channel    VARCHAR(20) NOT NULL,
-  trade_no   VARCHAR(64) NULL,
-  amount     DECIMAL(14,2) NOT NULL,
-  status     VARCHAR(20) NOT NULL DEFAULT 'INIT' COMMENT 'INIT/SUCCESS/FAILED/REFUNDED',
+  channel      VARCHAR(20) NOT NULL,
+  client_token VARCHAR(64) NULL COMMENT '客户端幂等键',
+  trade_no     VARCHAR(64) NULL,
+  amount       DECIMAL(14,2) NOT NULL,
+  status       VARCHAR(20) NOT NULL DEFAULT 'INIT' COMMENT 'INIT/SUCCESS/FAILED/REFUNDED',
+  refund_status VARCHAR(20) NOT NULL DEFAULT '' COMMENT '空/ PENDING / DONE',
   callback_raw TEXT NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  created_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_pr_order (order_id),
+  -- 同一订单+渠道+幂等键只允许一条, 防止连点刷出多张可支付单
+  UNIQUE KEY uk_pr_client (order_id, channel, client_token),
+  KEY idx_pr_order_channel_status (order_id, channel, status),
+  KEY idx_pr_refund (refund_status, created_at),
   CONSTRAINT fk_pr_order FOREIGN KEY (order_id) REFERENCES trade_order(id)
 ) ENGINE=InnoDB COMMENT='支付记录表(预留)';
