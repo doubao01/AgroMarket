@@ -117,6 +117,17 @@ try
 }
 catch (Exception ex) { Check("登录频控", false, ex.Message); }
 
+// 3.2 分页健壮性: (page-1)*pageSize 曾在极大页号下整数溢出成负数, 拼出 "OFFSET -xxx" 导致 500
+try
+{
+    foreach (var path in new[] { "/api/supplies", "/api/demands", "/api/community/posts" })
+    {
+        var (st, body) = await Call(HttpMethod.Get, $"{path}?page=2000000000&pageSize=20");
+        Check($"超大页号 {path} 不返回 500", st == HttpStatusCode.OK && Code(body) == 0, $"status={(int)st} code={Code(body)} msg={Msg(body)}");
+    }
+}
+catch (Exception ex) { Check("分页健壮性", false, ex.Message); }
+
 // 4. 管理员统计（真实成交额与演示成交额区分）
 if (adminToken.Length > 0)
 {
