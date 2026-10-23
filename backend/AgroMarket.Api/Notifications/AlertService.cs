@@ -1,3 +1,4 @@
+using AgroMarket.Api.Common;
 using System.Text.Json;
 using Dapper;
 
@@ -19,6 +20,8 @@ public class AlertService
     public record ScanHit(long ObjectId, string Detail);
     public sealed class ScanSummary
     {
+        /// <summary>本轮因为已有一轮在跑而直接跳过(跨进程互斥未取到锁)。</summary>
+        public bool Busy { get; set; }
         public int Executed { get; set; }
         public int Hit { get; set; }
         public int Suppressed { get; set; }
@@ -119,9 +122,19 @@ public class AlertService
     /// <summary>执行一轮扫描。dayRules=false 时跳过日级规则(成交额波动/联动滞后)。通知频次由抑制窗口控制: 同一对象每窗口至多通知一次。</summary>
     public async Task<ScanSummary> ScanAsync(bool dayRules = true)
     {
+        var conn = _db.Create();
+
+        // 跨进程互斥: 后台定时器与管理员手动扫描会同时跑同一轮, 造成重复通知与重复落库。
+        // 用数据库命名锁(非阻塞)串行化, 锁随连接关闭自动释放。
+        var locked = await conn.ExecuteScalarAsync<int?>("SELECT GET_LOCK('agromarket_alert_scan', 0)") == 1;
+        if (!locked)
+        {
+            conn.Dispose();
+            return new ScanSummary { Busy = true };
+        }
+
         var rules = (await GetRulesAsync()).Where(r => r.Enabled).ToDictionary(r => r.Code, r => r);
         var summary = new ScanSummary();
-        var conn = _db.Create();
         try
         {
             foreach (var (code, rule) in rules)
@@ -156,7 +169,12 @@ public class AlertService
             }
             return summary;
         }
-        finally { conn.Dispose(); }
+        finally
+        {
+            try { await conn.ExecuteScalarAsync<int?>("SELECT RELEASE_LOCK('agromarket_alert_scan')"); }
+            catch { /* 连接已断时锁会随会话释放 */ }
+            conn.Dispose();
+        }
     }
 
     /// <summary>
@@ -376,7 +394,7 @@ public class AlertService
                       status Status, hit_count HitCount, detail Detail,
                       resolved_at ResolvedAt, created_at CreatedAt
                FROM alert_record WHERE {where} ORDER BY id DESC LIMIT @l OFFSET @o",
-            new { rc = ruleCode, l = pageSize, o = (page - 1) * pageSize })).ToList();
+            new { rc = ruleCode, l = pageSize, o = Paging.Offset(page, pageSize) })).ToList();
         return new Dtos.PagedResult<AlertRecordDto>(items, total, page, pageSize);
     }
 }
