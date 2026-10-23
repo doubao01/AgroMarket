@@ -87,8 +87,8 @@ public class OpenAiCompatClient : ILlmClient
         return new LlmResponse(
             msg.Content ?? string.Empty,
             toolCalls,
-            parsed.Usage?.PromptTokens ?? 0,
-            parsed.Usage?.CompletionTokens ?? 0);
+            parsed.Usage?.ResolvedPromptTokens ?? 0,
+            parsed.Usage?.ResolvedCompletionTokens ?? 0);
     }
 
     public async IAsyncEnumerable<LlmStreamChunk> StreamAsync(
@@ -293,9 +293,19 @@ public class OpenAiCompatClient : ILlmClient
         [JsonPropertyName("arguments")] public string? Arguments { get; set; }
     }
 
+    /// <summary>
+    /// usage 兼容层: 官方协议用 prompt_tokens/completion_tokens, 但部分网关
+    /// (如 21r 的 deepseek-v4.1-flash) 只返回 input_tokens/output_tokens 且把标准字段填 0,
+    /// 直接读标准字段会让整条链路的 token 统计恒为 0。
+    /// </summary>
     private sealed class Usage
     {
         [JsonPropertyName("prompt_tokens")] public int PromptTokens { get; set; }
         [JsonPropertyName("completion_tokens")] public int CompletionTokens { get; set; }
+        [JsonPropertyName("input_tokens")] public int InputTokens { get; set; }
+        [JsonPropertyName("output_tokens")] public int OutputTokens { get; set; }
+
+        public int ResolvedPromptTokens => PromptTokens > 0 ? PromptTokens : InputTokens;
+        public int ResolvedCompletionTokens => CompletionTokens > 0 ? CompletionTokens : OutputTokens;
     }
 }
