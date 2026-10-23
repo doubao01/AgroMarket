@@ -253,6 +253,19 @@ public class TradeService
 
             await ValidateQuantityAsync(conn, q.SupplyId, q.DemandId, q.Quantity, q.Price, q.PriceUnit, tx);
 
+            // 下单即占用库存: 否则同一供应可被反复整量卖出(两次报价都通过校验 -> 超卖)。
+            // 用带条件的 UPDATE 做原子扣减, 并发下单时只有一个能成功
+            if (q.SupplyId != null)
+            {
+                var taken = await conn.ExecuteAsync(
+                    "UPDATE product_supply SET quantity = quantity - @q WHERE id=@id AND quantity >= @q",
+                    new { id = q.SupplyId, q = q.Quantity }, tx);
+                if (taken == 0) throw new BizException("可售数量不足, 请刷新后重试", ErrorCodes.Conflict);
+                await conn.ExecuteAsync(
+                    "UPDATE product_supply SET status='SOLD_OUT' WHERE id=@id AND quantity<=0",
+                    new { id = q.SupplyId }, tx);
+            }
+
             // 商品快照来源: 供应报价取商品信息; 采购需求报价取需求信息
             long? snapshotSupplyId = q.SupplyId;
             string productName; string? productSpec; string unit;
@@ -431,6 +444,24 @@ public class TradeService
                 throw new BizException("只有买方可以申请售后", ErrorCodes.Forbidden);
             if (target == "CANCELLED" && !isBuyer && o.Status != "PENDING_CONFIRM")
                 throw new BizException("仅待确认订单卖方可取消", ErrorCodes.Forbidden);
+
+            if (target == "CANCELLED")
+            {
+                // 已收款的订单不允许直接取消: 否则会出现"钱已到账 + 订单已取消 + 无退款"的死局。
+                // 注: 支付回调与取消并发进入时仍存在窄窗口, 需由退款补偿任务兜底(见 QA 报告)
+                var paid = await conn.ExecuteScalarAsync<bool>(
+                    "SELECT EXISTS(SELECT 1 FROM payment_record WHERE order_id=@oid AND status='SUCCESS')",
+                    new { oid = orderId }, tx);
+                if (paid)
+                    throw new BizException("订单已支付, 不能直接取消, 请申请售后或联系管理员退款", ErrorCodes.Conflict);
+                // 释放下单时占用的库存
+                await conn.ExecuteAsync(
+                    @"UPDATE product_supply s
+                      JOIN trade_order_item i ON i.supply_id = s.id
+                      SET s.quantity = s.quantity + i.quantity,
+                          s.status = CASE WHEN s.status = 'SOLD_OUT' THEN 'ACTIVE' ELSE s.status END
+                      WHERE i.order_id = @oid", new { oid = orderId }, tx);
+            }
 
             var timeCol = target switch
             {
