@@ -1,0 +1,32 @@
+# 构建上下文只需源码与项目文件。
+# 关键: appsettings.Development.json 被 .gitignore 忽略, 但 COPY 不看 git ——
+# 不排除它就会被打进镜像层, 本地的数据库口令、AI Key 随之泄漏。
+
+# 本地环境配置(含真实口令/密钥), 只保留 .example 供参考
+**/appsettings.Development.json
+**/appsettings.Local.json
+**/appsettings.*.local.json
+**/.env
+**/.env.*
+
+# 构建产物
+**/bin/
+**/obj/
+**/TestResults/
+
+# 用户上传与运行期文件
+**/uploads/
+**/logs/
+
+# 开发工具与版本控制
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.user
+**/*.suo
+.git/
+.gitignore
+.dockerignore
+
+# 测试项目不进运行时镜像
+AgroMarket.Tests/
