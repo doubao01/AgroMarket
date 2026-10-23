@@ -145,7 +145,7 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
                   "ORDER BY me.is_pinned DESC, c.last_message_at DESC, c.id DESC LIMIT @limit OFFSET @offset";
         using var conn = _db.Create();
         var rows = await conn.QueryAsync<ChatConversationRow>(sql,
-            new { uid = userId, kw = $"%{keyword}%", limit, offset });
+            new { uid = userId, kw = $"%{EscapeLike(keyword)}%", limit, offset });
         return rows.Select(MapConversation).ToList();
     }
 
@@ -161,8 +161,12 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
                      JOIN sys_user u ON u.id = peer.user_id
                      WHERE {where}";
         using var conn = _db.Create();
-        return await conn.ExecuteScalarAsync<long>(sql, new { uid = userId, kw = $"%{keyword}%" });
+        return await conn.ExecuteScalarAsync<long>(sql, new { uid = userId, kw = $"%{EscapeLike(keyword)}%" });
     }
+
+    /// <summary>转义 LIKE 通配符: 用户输入 % 或 _ 时不应变成"匹配全部"。</summary>
+    private static string EscapeLike(string? s)
+        => (s ?? "").Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
 
     public async Task<bool> IsParticipantAsync(long convId, long userId)
     {
@@ -279,8 +283,9 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
     public async Task HideAsync(long convId, long userId)
     {
         using var conn = _db.Create();
+        // 隐藏必须先清零未读: 否则下次对方来消息重新显示会话时, 会把删除前的老未读叠加回来
         await conn.ExecuteAsync(
-            "UPDATE chat_participant SET is_hidden=1 WHERE conversation_id=@c AND user_id=@uid",
+            "UPDATE chat_participant SET is_hidden=1, unread_count=0 WHERE conversation_id=@c AND user_id=@uid",
             new { c = convId, uid = userId });
     }
 
@@ -302,11 +307,31 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
         long convId, long senderId, string? clientMsgId, string messageType,
         string? content, string? payload, string? bizType, long? bizId, long? replyToMessageId)
     {
+        // 死锁重试: 本事务固定"先取会话行 X 锁再插消息", 已把同会话并发串行化;
+        // 仍可能与其它业务事务交叉加锁, 收到 1213/1205 时退避重试, 不把瞬时死锁暴露成 500
+        for (var attempt = 1; ; attempt++)
+        {
+            try { return await SendMessageOnceAsync(convId, senderId, clientMsgId, messageType, content, payload, bizType, bizId, replyToMessageId); }
+            catch (MySqlConnector.MySqlException ex) when (ex.Number is 1213 or 1205 && attempt < 3)
+            {
+                await Task.Delay(20 * attempt);
+            }
+        }
+    }
+
+    private async Task<(ChatMessageRow Row, bool IsNew)> SendMessageOnceAsync(
+        long convId, long senderId, string? clientMsgId, string messageType,
+        string? content, string? payload, string? bizType, long? bizId, long? replyToMessageId)
+    {
         using var conn = _db.Create();
         conn.Open();
         using var tx = conn.BeginTransaction();
         try
         {
+            // 必须先拿会话行写锁再插消息: chat_message 的外键在插入时对本行加共享锁,
+            // 随后 UPDATE chat_conversation 又要升级为排他锁, 并发发送时 30%~50% 触发死锁
+            await conn.ExecuteAsync("SELECT id FROM chat_conversation WHERE id=@c FOR UPDATE", new { c = convId }, tx);
+
             var id = await conn.ExecuteScalarAsync<long>(
                 @"INSERT INTO chat_message
                     (conversation_id, sender_id, client_msg_id, message_type, content, payload, biz_type, biz_id, reply_to_message_id)
@@ -373,7 +398,7 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
                  AND message_type IN ('TEXT','PRODUCT_CARD','QUOTE','ORDER_CARD')
                  AND content LIKE CONCAT('%',@kw,'%')
                ORDER BY id DESC LIMIT @limit",
-            new { c = convId, kw = keyword, limit });
+            new { c = convId, kw = EscapeLike(keyword), limit });
         return rows.ToList();
     }
 
@@ -407,11 +432,23 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
     public async Task<int> MarkReadAsync(long convId, long userId, long lastReadMessageId)
     {
         using var conn = _db.Create();
+        // 客户端普遍用 long.MaxValue 表示"全部已读", 因此不能直接拒绝越界游标;
+        // 统一夹到本会话最大消息ID, 既兼容该用法, 又避免伪造游标把已读推到不存在的位置
+        if (lastReadMessageId > 0)
+        {
+            var maxId = await conn.ExecuteScalarAsync<long>(
+                "SELECT COALESCE(MAX(id),0) FROM chat_message WHERE conversation_id=@c", new { c = convId });
+            if (maxId > 0) lastReadMessageId = Math.Min(lastReadMessageId, maxId);
+        }
         return await conn.ExecuteAsync(
+            // 未读数必须按"生效游标"(GREATEST 结果)重算: 多端/乱序上报旧游标时,
+            // 若用原始入参计算会把已读会话的未读重新放大(未读"复活")
             @"UPDATE chat_participant
-              SET last_read_message_id = GREATEST(COALESCE(last_read_message_id,0), @lr),
-                  unread_count = (SELECT COUNT(*) FROM chat_message m
-                                  WHERE m.conversation_id=@c AND m.id > @lr AND m.sender_id <> @uid)
+              SET unread_count = (SELECT COUNT(*) FROM chat_message m
+                                  WHERE m.conversation_id=@c
+                                    AND m.id > GREATEST(COALESCE(last_read_message_id,0), @lr)
+                                    AND m.sender_id <> @uid AND m.status <> 'RECALLED'),
+                  last_read_message_id = GREATEST(COALESCE(last_read_message_id,0), @lr)
               WHERE conversation_id=@c AND user_id=@uid",
             new { c = convId, uid = userId, lr = lastReadMessageId });
     }

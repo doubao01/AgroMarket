@@ -75,6 +75,8 @@ public class ChatService
             !ChatMessageType.ClientSendable.Contains(req.MessageType))
             throw new BizException("不支持的消息类型");
 
+        // client_msg_id 列为 VARCHAR(64), 超长会触发 MySQL 1406 被中间件兜成 500
+        if (req.ClientMsgId is { Length: > 64 }) throw new BizException("clientMsgId 过长", ErrorCodes.BadRequest);
         var content = req.Content?.Trim();
         if (req.MessageType == ChatMessageType.Text && string.IsNullOrEmpty(content))
             throw new BizException("消息内容不能为空");
@@ -172,6 +174,7 @@ public class ChatService
     {
         await EnsureParticipantAsync(convId, userId);
         if (lastReadMessageId <= 0) return;
+        // 越界游标在仓储层夹到本会话最大消息ID(兼容客户端用 long.MaxValue 表示全部已读)
         await _repo.MarkReadAsync(convId, userId, lastReadMessageId);
         await _repo.MarkDeliveredAsync(convId, userId, lastReadMessageId);
         await _realtime.NotifyReadAsync(convId, userId, lastReadMessageId);

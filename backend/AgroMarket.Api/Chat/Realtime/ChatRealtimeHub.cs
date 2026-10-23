@@ -234,6 +234,9 @@ public static class ChatRealtimeHub
     }
 
     /// <summary>读取一条完整文本消息 (处理分片)。连接关闭返回 null。</summary>
+    /// <summary>单帧上限: 聊天消息正文 ≤2000 字符, 64KB 足够; 超限直接断开, 防止单连接把进程内存打满。</summary>
+    private const int MaxFrameBytes = 64 * 1024;
+
     private static async Task<string?> ReceiveTextAsync(WebSocket socket, byte[] buffer, CancellationToken ct)
     {
         using var ms = new MemoryStream();
@@ -241,6 +244,7 @@ public static class ChatRealtimeHub
         {
             var result = await socket.ReceiveAsync(buffer, ct);
             if (result.MessageType == WebSocketMessageType.Close) return null;
+            if (ms.Length + result.Count > MaxFrameBytes) return null; // 返回 null 让调用方关闭连接
             ms.Write(buffer, 0, result.Count);
             if (result.EndOfMessage) break;
         }
