@@ -27,6 +27,12 @@ public class FederationOptions
     public string SharedKey { get; set; } = "";
 
     /// <summary>
+    /// 明细脱敏假名的 HMAC 密钥 (仅本节点持有, 不参与联邦交换)。为空时回退 SharedKey。
+    /// 该密钥决定 ref_xxx 假名能否被反查: 应使用部署期随机生成的值, 且不要与令牌密钥共用。
+    /// </summary>
+    public string PseudonymKey { get; set; } = "";
+
+    /// <summary>
     /// 节点令牌签名模式: SYMMETRIC(默认, HS256 共享密钥) / ASYMMETRIC(RS256 每节点密钥对)。
     /// ASYMMETRIC 下各节点独立私钥, 对端仅存公钥, 单点泄露不再可伪造全网令牌。
     /// </summary>

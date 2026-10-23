@@ -143,6 +143,7 @@ FROM fed_node";
     public async Task<int> DeleteNodeAsync(long id)
     {
         using var conn = _db.Create();
+        conn.Open(); // Create() 返回未打开的连接, 不开就直接 BeginTransaction 会抛 "Connection is not open"
         using var tx = conn.BeginTransaction();
         await conn.ExecuteAsync("DELETE FROM fed_sync_cursor WHERE peer_node_code=(SELECT node_code FROM fed_node WHERE id=@id)",
             new { id }, tx);

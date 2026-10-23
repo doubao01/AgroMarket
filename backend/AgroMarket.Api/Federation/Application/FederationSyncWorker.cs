@@ -31,7 +31,9 @@ public class FederationSyncWorker : BackgroundService
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            var interval = TimeSpan.FromMinutes(Math.Max(1, _settings.SyncIntervalMinutes));
+            // 运行时设置存于 fed_setting 表, 数据库抖动时读取会抛异常; 若异常逃出 ExecuteAsync,
+            // 默认 StopHost 会把整个 API 进程停掉 (与联动是否启用无关), 故此处必须兜底
+            var interval = ResolveInterval();
             if (_settings.IsSyncActive)
             {
                 try
@@ -63,6 +65,17 @@ public class FederationSyncWorker : BackgroundService
             var jitter = TimeSpan.FromSeconds(Random.Shared.Next(0, Math.Max(30, (int)(interval.TotalSeconds * 0.2)) + 1));
             try { await Task.Delay(interval + jitter, stoppingToken); }
             catch (OperationCanceledException) { break; }
+        }
+    }
+
+    /// <summary>读取同步间隔, 失败时回退到启动配置, 保证后台任务永不因设置读取失败而终止。</summary>
+    private TimeSpan ResolveInterval()
+    {
+        try { return TimeSpan.FromMinutes(Math.Max(1, _settings.SyncIntervalMinutes)); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "读取联动运行时设置失败, 回退配置默认间隔 {Minutes} 分钟", _opt.SyncIntervalMinutes);
+            return TimeSpan.FromMinutes(Math.Max(1, _opt.SyncIntervalMinutes));
         }
     }
 }

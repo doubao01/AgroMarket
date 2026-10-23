@@ -43,23 +43,25 @@ public class FederationSnapshotBuilder
         using var conn = _db.Create();
 
         var totalUsers = await conn.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM sys_user");
+        // 日期一律在 SQL 侧格式化为 yyyy-MM-dd: 直接 SELECT DATE(...) 会被映射成 DateTime,
+        // 再塞进 string 元组得到 "2026/10/23 00:00:00", 与下方 key 永不相等 -> 各指标恒为 0
         var newUsers = await GroupCount(conn,
-            "SELECT DATE(created_at) d, COUNT(*) c FROM sys_user WHERE created_at>=@from GROUP BY d", from);
+            "SELECT DATE_FORMAT(created_at,'%Y-%m-%d') d, COUNT(*) c FROM sys_user WHERE created_at>=@from GROUP BY d", from);
         var activeUsers = await GroupCount(conn,
-            "SELECT DATE(last_login_at) d, COUNT(*) c FROM sys_user WHERE last_login_at>=@from GROUP BY d", from);
+            "SELECT DATE_FORMAT(last_login_at,'%Y-%m-%d') d, COUNT(*) c FROM sys_user WHERE last_login_at>=@from GROUP BY d", from);
         var supplies = await GroupCount(conn,
-            "SELECT DATE(created_at) d, COUNT(*) c FROM product_supply WHERE created_at>=@from GROUP BY d", from);
+            "SELECT DATE_FORMAT(created_at,'%Y-%m-%d') d, COUNT(*) c FROM product_supply WHERE created_at>=@from GROUP BY d", from);
         var demands = await GroupCount(conn,
-            "SELECT DATE(created_at) d, COUNT(*) c FROM purchase_demand WHERE created_at>=@from GROUP BY d", from);
+            "SELECT DATE_FORMAT(created_at,'%Y-%m-%d') d, COUNT(*) c FROM purchase_demand WHERE created_at>=@from GROUP BY d", from);
         var messages = await GroupCount(conn,
-            "SELECT DATE(created_at) d, COUNT(*) c FROM chat_message WHERE created_at>=@from GROUP BY d", from);
+            "SELECT DATE_FORMAT(created_at,'%Y-%m-%d') d, COUNT(*) c FROM chat_message WHERE created_at>=@from GROUP BY d", from);
         var conversations = await GroupCount(conn,
-            "SELECT DATE(created_at) d, COUNT(DISTINCT conversation_id) c FROM chat_message WHERE created_at>=@from GROUP BY d", from);
+            "SELECT DATE_FORMAT(created_at,'%Y-%m-%d') d, COUNT(DISTINCT conversation_id) c FROM chat_message WHERE created_at>=@from GROUP BY d", from);
 
         var orders = await conn.QueryAsync<(string D, long C, decimal A)>(
-            $@"SELECT DATE(o.completed_at) D, COUNT(DISTINCT o.id) C, COALESCE(SUM(o.total_amount),0) A
+            $@"SELECT DATE_FORMAT(o.completed_at,'%Y-%m-%d') D, COUNT(DISTINCT o.id) C, COALESCE(SUM(o.total_amount),0) A
                FROM trade_order o WHERE {DashboardService.RealOrderWhere} AND o.completed_at>=@from
-               GROUP BY DATE(o.completed_at)", new { from });
+               GROUP BY DATE_FORMAT(o.completed_at,'%Y-%m-%d')", new { from });
         var orderMap = orders.ToDictionary(x => x.D, x => (x.C, x.A));
 
         var list = new List<FedMetricDto>();
@@ -211,11 +213,17 @@ public class FederationSnapshotBuilder
         Data = JsonSerializer.SerializeToElement(data),
     };
 
-    /// <summary>把本地用户ID压成不可逆假名 (以本节点编码加盐), 用于跨节点商机撮合但不可还原到人。</summary>
+    /// <summary>
+    /// 把本地用户ID压成不可逆假名, 用于跨节点商机撮合但不可还原到人。
+    /// 必须用密钥化 HMAC: 节点编码是公开信息, 旧实现 SHA256("节点编码:用户ID:fed") 截断 48bit,
+    /// 拿到任意一条明细即可遍历用户ID 秒级反查到具体用户。
+    /// </summary>
     private string Pseudonym(long userId)
     {
-        var raw = Encoding.UTF8.GetBytes($"{_opt.NodeCode}:{userId}:fed");
-        var hash = SHA256.HashData(raw);
-        return "ref_" + Convert.ToHexString(hash)[..12].ToLowerInvariant();
+        var key = Encoding.UTF8.GetBytes(
+            string.IsNullOrWhiteSpace(_opt.PseudonymKey) ? _opt.SharedKey : _opt.PseudonymKey);
+        var raw = Encoding.UTF8.GetBytes($"{_opt.NodeCode}:{userId}");
+        var mac = HMACSHA256.HashData(key, raw);
+        return "ref_" + Convert.ToHexString(mac)[..32].ToLowerInvariant();
     }
 }
