@@ -22,8 +22,9 @@ public record ChatMessage(
     public static ChatMessage Assistant(string content) => new(ChatRole.Assistant, content);
 
     /// <summary>携带工具调用请求的助手消息, 下一轮须原样回传以符合 OpenAI 协议。</summary>
-    public static ChatMessage Assistant(string content, IReadOnlyList<ToolCall> toolCalls)
-        => new(ChatRole.Assistant, content, toolCalls);
+    // 带 tool_calls 的助手消息没有正文, 协议侧以空串占位(而不是 null), 避免序列化出 content:null
+    public static ChatMessage Assistant(string? content, IReadOnlyList<ToolCall> toolCalls)
+        => new(ChatRole.Assistant, content ?? "", toolCalls);
 
     /// <summary>工具执行结果消息, 必须回传对应 tool_call_id。</summary>
     public static ChatMessage Tool(string toolCallId, string name, string content)

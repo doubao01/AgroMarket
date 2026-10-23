@@ -144,7 +144,9 @@ public class OpenAiCompatClient : ILlmClient
 
         var toolCallBuffers = new Dictionary<int, (string? id, StringBuilder name, StringBuilder args)>();
 
-        while (!reader.EndOfStream && !ct.IsCancellationRequested)
+        // 只靠 ReadLineAsync 返回 null 判断结束: EndOfStream 是同步阻塞检查,
+        // 在每个 SSE 分片的空闲期会占住线程池线程, 且与随后的异步读取重复
+        while (!ct.IsCancellationRequested)
         {
             var line = await reader.ReadLineAsync(ct);
             if (line == null) break;
