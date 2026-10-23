@@ -54,8 +54,16 @@ JsonElement Data(JsonElement b) => b.ValueKind == JsonValueKind.Object && b.TryG
 
 async Task<string> Login(string phone, string pwd)
 {
-    var (_, b) = await Call(HttpMethod.Post, "/api/auth/login/password", new { phone, password = pwd });
-    return Data(b).GetProperty("token").GetString()!;
+    var (status, b) = await Call(HttpMethod.Post, "/api/auth/login/password", new { phone, password = pwd });
+    var d = Data(b);
+    // data 为 null 时(典型原因: 被测实例连不上库导致 500)直接取 token 会抛
+    // "requires an element of type 'Object'" 并中断整段断言, 这里改为返回空串并打印诊断
+    if (d.ValueKind != JsonValueKind.Object || !d.TryGetProperty("token", out var t) || t.ValueKind != JsonValueKind.String)
+    {
+        Console.WriteLine($"  [diag] 登录失败 {phone}: HTTP {(int)status} code={Code(b)} msg={Msg(b)}");
+        return "";
+    }
+    return t.GetString() ?? "";
 }
 
 string JwtHeader(string token)
@@ -189,6 +197,14 @@ if (supplyId > 0 && sellerToken.Length > 0 && buyerToken.Length > 0)
                 var stNow = Data(dd).TryGetProperty("status", out var sn) ? sn.GetString() : "";
                 var paidAt = Data(dd).TryGetProperty("paidAt", out var pa) ? pa : default;
                 Check("支付后订单进入 TO_SHIP 且记录支付时间", stNow == "TO_SHIP" && paidAt.ValueKind == JsonValueKind.String, $"status={stNow}");
+
+                // 回归: 已支付订单不允许直接取消, 否则"钱已收 + 单已取消 + 无退款"
+                var (cx, cxb) = await Call(HttpMethod.Post, $"/api/orders/{oid}/status/cancel",
+                    new { reason = "支付后尝试取消" }, buyerToken);
+                var (_, dd2) = await Call(HttpMethod.Get, $"/api/orders/{oid}", null, buyerToken);
+                var stAfterCancel = Data(dd2).TryGetProperty("status", out var sn2) ? sn2.GetString() : "";
+                Check("已支付订单取消被拒绝(409)且状态不变", Code(cxb) == 409 && stAfterCancel == "TO_SHIP",
+                    $"code={Code(cxb)} status={stAfterCancel}");
 
                 var (_, ship) = await Call(HttpMethod.Post, $"/api/orders/{oid}/status/ship", null, sellerToken);
                 Check("卖方发货进入 SHIPPING", Code(ship) == 0, $"code={Code(ship)}");
@@ -995,6 +1011,10 @@ else
         };
         psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
         psi.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:18080";
+        // 显式透传连接串: 子进程默认继承父进程环境变量, 但父进程未设置时会回落到
+        // appsettings.Development.json 的默认端口, 在自定义端口/容器环境下表现为登录 500
+        var aiConn = Environment.GetEnvironmentVariable("ConnectionStrings__Default");
+        if (!string.IsNullOrWhiteSpace(aiConn)) psi.Environment["ConnectionStrings__Default"] = aiConn;
         psi.Environment["Ai__BaseUrl"] = "http://127.0.0.1:19099/v1";
         psi.Environment["Ai__ApiKey"] = "test-key";
         psi.Environment["Ai__Model"] = "mock-model";
@@ -1016,7 +1036,13 @@ else
                 var r = await aiHttp.PostAsync("/api/auth/login/password",
                     JsonContent.Create(new { phone, password = pwd }));
                 var j = JsonDocument.Parse(await r.Content.ReadAsStringAsync()).RootElement;
-                return j.GetProperty("data").GetProperty("token").GetString()!;
+                var jd = Data(j);
+                if (jd.ValueKind != JsonValueKind.Object || !jd.TryGetProperty("token", out var jt))
+                {
+                    Console.WriteLine($"  [diag] AI 实例登录失败 {phone}: HTTP {(int)r.StatusCode} code={Code(j)} msg={Msg(j)}");
+                    return "";
+                }
+                return jt.GetString() ?? "";
             }
 
             async Task<(HttpStatusCode status, JsonElement body)> AiCall(HttpMethod method, string url, object? payload, string? token)
@@ -1364,8 +1390,12 @@ try
     await Call(HttpMethod.Put, "/api/admin/federation/settings",
         new Dictionary<string, string?> { ["BackfillDays"] = "" }, adminToken);
 
-    // 清理: 移除测试对端节点
-    if (rsaId > 0) await Call(HttpMethod.Delete, $"/api/admin/federation/nodes/{rsaId}", null, adminToken);
+    // 清理: 移除测试对端节点 (顺带断言删除结果 —— 旧实现因事务前未打开连接恒返回 500)
+    if (rsaId > 0)
+    {
+        var (dnS, dnB) = await Call(HttpMethod.Delete, $"/api/admin/federation/nodes/{rsaId}", null, adminToken);
+        Check("删除对端节点成功(200)", dnS == HttpStatusCode.OK && Code(dnB) == 0, $"status={(int)dnS} msg={Msg(dnB)}");
+    }
     if (peerId > 0) await Call(HttpMethod.Delete, $"/api/admin/federation/nodes/{peerId}", null, adminToken);
     if (maskSupplyId > 0) await Call(HttpMethod.Post, $"/api/supplies/{maskSupplyId}/status/off_shelf", null, sellerToken);
 }
@@ -1397,6 +1427,8 @@ else
         };
         psi.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
         psi.Environment["ASPNETCORE_URLS"] = "http://127.0.0.1:18090";
+        var aggConn = Environment.GetEnvironmentVariable("ConnectionStrings__Default");
+        if (!string.IsNullOrWhiteSpace(aggConn)) psi.Environment["ConnectionStrings__Default"] = aggConn;
         psi.Environment["Federation__Role"] = "AGGREGATOR";
         psi.Environment["Federation__AutoSync"] = "false";
         agg = Process.Start(psi);
@@ -1415,7 +1447,13 @@ else
             var login = await aggHttp.PostAsync("/api/auth/login/password",
                 JsonContent.Create(new { phone = "13800000001", password = "Abc123456" }));
             var lbody = JsonDocument.Parse(await login.Content.ReadAsStringAsync()).RootElement.Clone();
-            var aggTok = lbody.GetProperty("data").GetProperty("token").GetString()!;
+            var aggData = Data(lbody);
+            if (aggData.ValueKind != JsonValueKind.Object || !aggData.TryGetProperty("token", out var aggTokenEl))
+            {
+                Console.WriteLine($"  [diag] 汇聚实例登录失败: HTTP {(int)login.StatusCode} code={Code(lbody)} msg={Msg(lbody)}");
+                throw new InvalidOperationException($"汇聚实例登录失败(code={Code(lbody)})");
+            }
+            var aggTok = aggTokenEl.GetString() ?? "";
             var aggAuth = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", aggTok);
 
             var writeReq = new HttpRequestMessage(HttpMethod.Post, "/api/supplies")
@@ -1485,6 +1523,36 @@ try
         var (ns, nb) = await Call(HttpMethod.Put, "/api/admin/alerts/rules/NOT_EXIST", new { enabled = true }, adminToken);
         Check("未知规则代码返回 404", ns == HttpStatusCode.NotFound, $"status={(int)ns}");
 
+        // --- 夹具: 报警规则需要真实数据才能命中, 种子库没有 PENDING 记录, 直接扫永远是 0/0 ---
+        // 造 2 条待审核供应并把 AUDIT_BACKLOG 阈值降到 1, 让规则引擎被确定性覆盖
+        long fCat = 0, fCounty = 0, fTown = 0;
+        var (_, seedB) = await Call(HttpMethod.Get, "/api/supplies?pageSize=1", null, sellerToken);
+        if (Data(seedB).TryGetProperty("items", out var seedItems) && seedItems.ValueKind == JsonValueKind.Array && seedItems.GetArrayLength() > 0)
+        {
+            var seed0 = seedItems[0];
+            if (seed0.TryGetProperty("countyId", out var scId) && scId.ValueKind == JsonValueKind.Number) fCounty = scId.GetInt64();
+            if (seed0.TryGetProperty("townId", out var stId) && stId.ValueKind == JsonValueKind.Number) fTown = stId.GetInt64();
+        }
+        var (_, catB3) = await Call(HttpMethod.Get, "/api/categories", null, sellerToken);
+        if (Data(catB3).ValueKind == JsonValueKind.Array)
+            foreach (var c in Data(catB3).EnumerateArray())
+                if (c.TryGetProperty("parentId", out var pid3) && pid3.ValueKind == JsonValueKind.Number) { fCat = c.GetProperty("id").GetInt64(); break; }
+        if (fCat > 0 && fCounty > 0 && fTown > 0)
+        {
+            for (var i = 0; i < 2; i++)
+                await Call(HttpMethod.Post, "/api/supplies", new
+                {
+                    title = $"报警夹具供应{i}", categoryId = fCat, description = (string?)null,
+                    quantity = 10m, unit = "斤", price = 1.2m, priceUnit = "元/斤", negotiable = true,
+                    minOrderQty = (decimal?)null, countyId = fCounty, townId = fTown, villageId = (long?)null,
+                    spec = (string?)null, harvestTime = (string?)null, deliveryMode = "BOTH",
+                    contactPhone = (string?)null, tradeNote = (string?)null, effectiveDays = 30, images = (List<string>?)null,
+                }, sellerToken);
+            await Call(HttpMethod.Put, "/api/admin/alerts/rules/AUDIT_BACKLOG",
+                new { enabled = true, thresholdValue = 1, suppressHours = 24 }, adminToken);
+        }
+        Check("报警夹具就绪(待审核积压 + 阈值下调)", fCat > 0 && fCounty > 0 && fTown > 0, $"cat={fCat} county={fCounty} town={fTown}");
+
         var (ss1, sb1) = await Call(HttpMethod.Post, "/api/admin/alerts/scan", null, adminToken);
         int executed1 = ss1 == HttpStatusCode.OK && Data(sb1).TryGetProperty("executed", out var e1) ? e1.GetInt32() : -1;
         int hit1 = Data(sb1).ValueKind == JsonValueKind.Object && Data(sb1).TryGetProperty("hit", out var h1) ? h1.GetInt32() : -1;
@@ -1549,6 +1617,18 @@ try
         int commentCount = pd.ValueKind == JsonValueKind.Object && pd.TryGetProperty("post", out var pj) && pj.TryGetProperty("commentCount", out var cc) ? cc.GetInt32() : -1;
         int commentsLen = pd.ValueKind == JsonValueKind.Object && pd.TryGetProperty("comments", out var cl) ? cl.GetArrayLength() : -1;
         Check("帖子详情含评论(计数=2)", gs == HttpStatusCode.OK && Code(gb) == 0 && commentCount == 2 && commentsLen == 2, $"count={commentCount} len={commentsLen}");
+
+        // 回归: 非作者删除必须失败, 且不得把他人帖子下的评论/点赞级联清空
+        var (dOther, _) = await Call(HttpMethod.Delete, $"/api/community/posts/{postId}", null, buyerToken);
+        var (kgs, kgb) = await Call(HttpMethod.Get, $"/api/community/posts/{postId}");
+        var kgd = Data(kgs == HttpStatusCode.OK ? kgb : default);
+        int keptComments = kgd.ValueKind == JsonValueKind.Object && kgd.TryGetProperty("comments", out var kcl) ? kcl.GetArrayLength() : -1;
+        Check("非作者删除他人帖子被拒绝且评论未被清空", dOther == HttpStatusCode.NotFound && keptComments == 2,
+            $"status={(int)dOther} comments={keptComments}");
+
+        // 回归: 帖子不存在时点赞应 404, 不能写入指向不存在帖子的孤儿点赞
+        var (ghost, _) = await Call(HttpMethod.Post, "/api/community/posts/99999999/like", null, buyerToken);
+        Check("给不存在的帖子点赞返回 404", ghost == HttpStatusCode.NotFound, $"status={(int)ghost}");
 
         var (hs, hb) = await Call(HttpMethod.Get, "/api/community/posts?orderBy=hot&topic=MARKET");
         Check("热点帖子列表可访问", hs == HttpStatusCode.OK && Code(hb) == 0 && Data(hb).ValueKind == JsonValueKind.Object && Data(hb).TryGetProperty("total", out _));
