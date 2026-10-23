@@ -96,23 +96,35 @@ public class WeChatPushService
     }
 
     private async Task<long> GetQuotaAsync(long userId, string templateKey)
-        => await _db.Create().ExecuteScalarAsync<long>(
+    {
+        // _db.Create() 每次都是新连接对象, 不 Dispose 就不会及时归还连接池
+        using var conn = _db.Create();
+        var quota = await conn.ExecuteScalarAsync<long?>(
             "SELECT quota FROM wx_subscribe_quota WHERE user_id=@u AND template_key=@k", new { u = userId, k = templateKey });
+        return quota ?? 0;
+    }
 
     private async Task DecrQuotaAsync(long userId, string templateKey)
-        => await _db.Create().ExecuteAsync(
+    {
+        using var conn = _db.Create();
+        await conn.ExecuteAsync(
             "UPDATE wx_subscribe_quota SET quota = GREATEST(quota-1, 0) WHERE user_id=@u AND template_key=@k", new { u = userId, k = templateKey });
+    }
 
     private async Task ClearQuotaAsync(long userId, string templateKey)
-        => await _db.Create().ExecuteAsync(
+    {
+        using var conn = _db.Create();
+        await conn.ExecuteAsync(
             "UPDATE wx_subscribe_quota SET quota = 0 WHERE user_id=@u AND template_key=@k", new { u = userId, k = templateKey });
+    }
 
     private async Task<string?> GetOpenIdAsync(long userId)
     {
         // sys_user 无 openid 列时返回 null; 若后续接入微信登录, 在 sys_user 增加 wx_openid 列后此处自动生效
         try
         {
-            return await _db.Create().ExecuteScalarAsync<string?>(
+            using var conn = _db.Create();
+            return await conn.ExecuteScalarAsync<string?>(
                 "SELECT wx_openid FROM sys_user WHERE id=@u AND wx_openid IS NOT NULL", new { u = userId });
         }
         catch { return null; }
