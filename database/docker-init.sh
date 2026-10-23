@@ -3,7 +3,8 @@
 # 容器内数据库初始化: 按序执行 database/0*.sql 全部迁移 (01..NN)
 # 供 MySQL 官方镜像 docker-entrypoint-initdb.d 在首次启动时调用。
 # - SQL 内已含 `CREATE DATABASE IF NOT EXISTS agro_market` 且各节点容器库名统一为 agro_market
-# - 仅执行 0*.sql, 不会误跑 init-db.sh / 文档
+# - 执行 NN_*.sql 全部数字前缀迁移(01..99); 旧版 glob 0*.sql 会漏掉 10_market_enhance /
+#   11_push_alert / 12_community, 导致容器首次启动缺表
 # =====================================================================
 set -e
 
@@ -15,7 +16,7 @@ if [ -z "$PW" ]; then
   exit 1
 fi
 
-for f in "$DIR"/0*.sql; do
+for f in "$DIR"/[0-9][0-9]_*.sql; do
   [ -e "$f" ] || continue
   echo "[docker-init] applying $(basename "$f")"
   mysql -uroot -p"$PW" --protocol=socket < "$f"

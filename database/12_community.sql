@@ -1,5 +1,8 @@
 -- 12_community.sql: 焦点图(banner) + 社区帖子/评论/点赞
 -- 幂等, 兼容 MySQL 8 / MariaDB 10.11
+-- 必须显式切库: init-db.sh / docker-init.sh 都以 mysql < file 形式执行, 不带库名参数
+
+USE agro_market;
 
 CREATE TABLE IF NOT EXISTS banner (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

@@ -109,16 +109,23 @@ public class CommunityService
     public async Task DeletePostAsync(long userId, long id)
     {
         using var conn = _db.Create();
-        await conn.ExecuteAsync("DELETE FROM community_post WHERE id=@id AND user_id=@u", new { id, u = userId });
-        await conn.ExecuteAsync("DELETE FROM community_comment WHERE post_id=@id", new { id });
-        await conn.ExecuteAsync("DELETE FROM post_like WHERE post_id=@id", new { id });
+        conn.Open(); // Dapper 的 Create() 返回未打开的连接, BeginTransaction 前必须显式打开
+        using var tx = conn.BeginTransaction();
+        // 归属校验必须先于级联删除: 否则非作者调用虽然删不掉帖子, 却会把他人帖子下的评论与点赞全部清空
+        var affected = await conn.ExecuteAsync(
+            "DELETE FROM community_post WHERE id=@id AND user_id=@u", new { id, u = userId }, tx);
+        if (affected == 0) throw new BizException("帖子不存在或无权删除", ErrorCodes.NotFound);
+        await conn.ExecuteAsync("DELETE FROM community_comment WHERE post_id=@id", new { id }, tx);
+        await conn.ExecuteAsync("DELETE FROM post_like WHERE post_id=@id", new { id }, tx);
+        tx.Commit();
     }
 
     public async Task AdminSetPostStatusAsync(long id, string status)
     {
         if (status is not ("ACTIVE" or "OFF")) throw new BizException("状态只能是 ACTIVE/OFF", ErrorCodes.BadRequest);
         using var conn = _db.Create();
-        await conn.ExecuteAsync("UPDATE community_post SET status=@s WHERE id=@id", new { s = status, id });
+        var affected = await conn.ExecuteAsync("UPDATE community_post SET status=@s WHERE id=@id", new { s = status, id });
+        if (affected == 0) throw new BizException("帖子不存在", ErrorCodes.NotFound);
     }
 
     // ---------- 评论与点赞 ----------
@@ -126,6 +133,8 @@ public class CommunityService
     public async Task<long> AddCommentAsync(long userId, long postId, CommentUpsert req)
     {
         if (string.IsNullOrWhiteSpace(req.Content) || req.Content.Trim().Length < 1) throw new BizException("评论内容不能为空");
+        // 与 community_comment.content VARCHAR(1000) 对齐, 否则超长会触发 MySQL 1406 被兜成 500
+        if (req.Content.Trim().Length > 1000) throw new BizException("评论内容过长", ErrorCodes.BadRequest);
         using var conn = _db.Create();
         var post = await conn.QuerySingleOrDefaultAsync<(long Id, long UserId)>(
             "SELECT id Id, user_id UserId FROM community_post WHERE id=@id AND status='ACTIVE'", new { id = postId });
@@ -162,15 +171,23 @@ public class CommunityService
     public async Task<bool> ToggleLikeAsync(long userId, long postId)
     {
         using var conn = _db.Create();
-        var exists = await conn.ExecuteScalarAsync<bool>("SELECT 1 FROM post_like WHERE post_id=@p AND user_id=@u", new { p = postId, u = userId });
-        if (exists)
+        // post_like 无外键, 必须先校验帖子存在且可见, 否则会写入指向不存在帖子的孤儿点赞
+        var postExists = await conn.ExecuteScalarAsync<int?>(
+            "SELECT 1 FROM community_post WHERE id=@p AND status='ACTIVE'", new { p = postId });
+        if (postExists == null) throw new BizException("帖子不存在或已被隐藏", ErrorCodes.NotFound);
+        // 用 DELETE 的影响行数判定"之前是否已点赞", 再按实际 INSERT 行数累加:
+        // 并发点赞时 INSERT IGNORE 可能 0 行, 若无条件 +1 会让 like_count 虚高
+        var removed = await conn.ExecuteAsync(
+            "DELETE FROM post_like WHERE post_id=@p AND user_id=@u", new { p = postId, u = userId });
+        if (removed > 0)
         {
-            await conn.ExecuteAsync("DELETE FROM post_like WHERE post_id=@p AND user_id=@u", new { p = postId, u = userId });
             await conn.ExecuteAsync("UPDATE community_post SET like_count=GREATEST(like_count-1,0) WHERE id=@p", new { p = postId });
             return false;
         }
-        await conn.ExecuteAsync("INSERT IGNORE INTO post_like (post_id, user_id) VALUES (@p, @u)", new { p = postId, u = userId });
-        await conn.ExecuteAsync("UPDATE community_post SET like_count=like_count+1 WHERE id=@p", new { p = postId });
+        var inserted = await conn.ExecuteAsync(
+            "INSERT IGNORE INTO post_like (post_id, user_id) VALUES (@p, @u)", new { p = postId, u = userId });
+        if (inserted > 0)
+            await conn.ExecuteAsync("UPDATE community_post SET like_count=like_count+1 WHERE id=@p", new { p = postId });
         return true;
     }
 
