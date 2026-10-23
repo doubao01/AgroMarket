@@ -225,6 +225,26 @@ public class AlertService
         return (false, true);
     }
 
+    /// <summary>
+    /// 给所有在职管理员各推一条通知。供支付退款等"系统级异常"复用,
+    /// 不写 alert_record(不参与规则的抑制窗口)。
+    /// </summary>
+    public async Task NotifyAdminsAsync(string title, string content, long refId)
+    {
+        try
+        {
+            using var conn = _db.Create();
+            var ids = await conn.QueryAsync<long>("SELECT id FROM sys_user WHERE role='ADMIN' AND status='ACTIVE'");
+            foreach (var uid in ids)
+                await _push.NotifyAsync(uid, "ALERT", title, content, refId);
+        }
+        catch (Exception ex)
+        {
+            // 通知失败不能影响主交易流程
+            _logger.LogWarning(ex, "notify admins failed: {Title}", title);
+        }
+    }
+
     private async Task NotifyReceiversAsync(System.Data.IDbConnection conn, AlertRule rule, ScanHit hit)
     {
         var receivers = await ResolveReceiversAsync(conn, rule.RecipientScope, rule.Code, hit);
