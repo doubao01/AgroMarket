@@ -242,10 +242,19 @@ public class AlertService
     private async Task<List<ScanHit>> ScanPayTimeoutAsync(System.Data.IDbConnection conn, AlertRule rule)
     {
         var hours = ThresholdOf(rule.ThresholdJson, "hours", 24);
+        // 计时基准必须是"进入待付款"的时间, 不是下单时间: 卖方隔天才确认的订单若按下单时间算,
+        // 一进 TO_PAY 就被判超时, 既发误报又提前消耗抑制窗口, 真实超时反而被压掉
         var rows = await conn.QueryAsync<(long Id, string OrderNo, decimal Amount)>(
             @"SELECT o.id, o.order_no OrderNo, o.total_amount Amount
               FROM trade_order o
-              WHERE o.status='TO_PAY' AND o.created_at < DATE_SUB(NOW(3), INTERVAL @h HOUR)
+              LEFT JOIN (
+                  SELECT order_id, MAX(created_at) AS to_pay_at
+                  FROM trade_order_status_log WHERE to_status='TO_PAY' GROUP BY order_id
+              ) l ON l.order_id = o.id
+              WHERE o.status='TO_PAY'
+                AND COALESCE(l.to_pay_at, o.created_at) < DATE_SUB(NOW(3), INTERVAL @h HOUR)
+                AND NOT EXISTS (SELECT 1 FROM alert_record ar
+                                WHERE ar.rule_code='ORDER_PAY_TIMEOUT' AND ar.object_id=o.id AND ar.resolved_at IS NULL)
               LIMIT 100",
             new { h = hours });
         return rows.Select(r => new ScanHit(r.Id, $"订单 {r.OrderNo} 已超过 {hours} 小时未支付（金额 {r.Amount} 元），请及时处理")).ToList();
@@ -255,9 +264,13 @@ public class AlertService
     {
         var hours = ThresholdOf(rule.ThresholdJson, "hours", 48);
         var rows = await conn.QueryAsync<(long Id, string QuoteNo, decimal Price, decimal Qty)>(
+            // 已产生未解决报警的对象不再重复计入: 否则每轮扫描都会命中同一批对象,
+            // LIMIT 100 被长期占满后, 新出现的超时对象永远轮不到(监控静默失效)
             @"SELECT q.id, q.quote_no QuoteNo, q.price Price, q.quantity Qty
               FROM trade_quote q
               WHERE q.status='PENDING' AND q.created_at < DATE_SUB(NOW(3), INTERVAL @h HOUR)
+                AND NOT EXISTS (SELECT 1 FROM alert_record ar
+                                WHERE ar.rule_code='QUOTE_NO_RESPONSE' AND ar.object_id=q.id AND ar.resolved_at IS NULL)
               LIMIT 100",
             new { h = hours });
         return rows.Select(r => new ScanHit(r.Id, $"报价 {r.QuoteNo}（{r.Price} 元/单位 x {r.Qty}）已超过 {hours} 小时未响应，请尽快处理")).ToList();
@@ -268,9 +281,13 @@ public class AlertService
         var rows = await conn.QueryAsync<(long Id, string Title, string Kind)>(
             @"SELECT s.id, s.title Title, 'SUPPLY' Kind FROM product_supply s
               WHERE s.status='ACTIVE' AND s.expire_at IS NOT NULL AND s.expire_at < NOW(3)
+                AND NOT EXISTS (SELECT 1 FROM alert_record ar
+                                WHERE ar.rule_code='LISTING_EXPIRED' AND ar.object_id=s.id AND ar.resolved_at IS NULL)
               UNION ALL
               SELECT d.id, d.title, 'DEMAND' FROM purchase_demand d
               WHERE d.status='ACTIVE' AND d.expire_at IS NOT NULL AND d.expire_at < NOW(3)
+                AND NOT EXISTS (SELECT 1 FROM alert_record ar
+                                WHERE ar.rule_code='LISTING_EXPIRED' AND ar.object_id=d.id AND ar.resolved_at IS NULL)
               LIMIT 100");
         return rows.Select(r => new ScanHit(r.Id, $"您的{(r.Kind == "SUPPLY" ? "供应" : "采购")}「{r.Title}」已过有效期，请及时续期或下架")).ToList();
     }
