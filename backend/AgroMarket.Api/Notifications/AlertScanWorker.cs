@@ -46,29 +46,21 @@ public class AlertScanWorker : BackgroundService
 
     public async Task RunOnceAsync(CancellationToken ct = default)
     {
-        using var conn = _db.Create();
-        // 多实例互斥: 非阻塞咨询锁, 取不到说明本轮已有实例在扫
-        var locked = await conn.ExecuteScalarAsync<bool>("SELECT GET_LOCK('agro_market_alert_scan', 0)");
-        if (!locked)
+        // 互斥统一由 AlertService.ScanAsync 内部的命名锁负责(手动触发也走同一条路径);
+        // 这里曾再取一把名字不同的锁, 既不起作用又让人误以为有两层保护
+        var sw = Stopwatch.StartNew();
+        // 日级规则(成交额波动/联动滞后)每 24h 执行一次
+        var dayRules = DateTime.Now - _lastDailyRun >= TimeSpan.FromHours(24);
+        var summary = await _alerts.ScanAsync(dayRules);
+        if (summary.Busy)
         {
-            _logger.LogDebug("alert scan lock held by another instance, skip");
+            _logger.LogDebug("alert scan skipped: another instance is scanning");
             return;
         }
-        try
-        {
-            var sw = Stopwatch.StartNew();
-            // 日级规则(成交额波动/联动滞后)每 24h 执行一次
-            var dayRules = DateTime.Now - _lastDailyRun >= TimeSpan.FromHours(24);
-            var summary = await _alerts.ScanAsync(dayRules);
-            if (dayRules) _lastDailyRun = DateTime.Now;
-            if (summary.Executed > 0)
-                _logger.LogInformation(
-                    "alert scan done: executed={Executed} hit={Hit} suppressed={Suppressed} errors={Errors} elapsed={Elapsed}ms",
-                    summary.Executed, summary.Hit, summary.Suppressed, summary.Errors.Count, sw.ElapsedMilliseconds);
-        }
-        finally
-        {
-            await conn.ExecuteAsync("SELECT RELEASE_LOCK('agro_market_alert_scan')");
-        }
+        if (dayRules) _lastDailyRun = DateTime.Now;
+        if (summary.Executed > 0)
+            _logger.LogInformation(
+                "alert scan done: executed={Executed} hit={Hit} suppressed={Suppressed} errors={Errors} elapsed={Elapsed}ms",
+                summary.Executed, summary.Hit, summary.Suppressed, summary.Errors.Count, sw.ElapsedMilliseconds);
     }
 }
