@@ -135,7 +135,7 @@ public class AdminController : ControllerBase
         var p = new Dapper.DynamicParameters();
         var where = "";
         if (!string.IsNullOrWhiteSpace(module)) { where = "WHERE module=@m"; p.Add("m", module); }
-        p.Add("limit", pageSize); p.Add("offset", (page - 1) * pageSize);
+        p.Add("limit", pageSize); p.Add("offset", Paging.Offset(page, pageSize));
         var total = await conn.ExecuteScalarAsync<long>($"SELECT COUNT(*) FROM sys_operation_log {where}", p);
         var items = (await conn.QueryAsync<object>(
             $@"SELECT l.id, l.operator_id OperatorId, u.nickname OperatorName, l.module Module, l.action Action,

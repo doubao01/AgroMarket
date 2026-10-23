@@ -500,7 +500,7 @@ public class TradeService
         else if (scope == "SELL") { w.Add("q.seller_id=@uid"); p.Add("uid", userId); }
         else { w.Add("(q.buyer_id=@uid OR q.seller_id=@uid)"); p.Add("uid", userId); }
         var where = w.Count == 0 ? "1=1" : " AND " + string.Join(" AND ", w);
-        p.Add("limit", pageSize); p.Add("offset", (page - 1) * pageSize);
+        p.Add("limit", pageSize); p.Add("offset", Paging.Offset(page, pageSize));
         using var conn = _db.Create();
         var total = await conn.ExecuteScalarAsync<long>(
             $"SELECT COUNT(*) FROM trade_quote q WHERE 1=1 {where}", p);
@@ -531,7 +531,7 @@ public class TradeService
         if (!string.IsNullOrWhiteSpace(status)) { w.Add("o.status=@st"); p.Add("st", status); }
         var where = string.Join(" AND ", w);
         p.Add("limit", pageSize);
-        p.Add("offset", (page - 1) * pageSize);
+        p.Add("offset", Paging.Offset(page, pageSize));
         using var conn = _db.Create();
         var total = await conn.ExecuteScalarAsync<long>($"SELECT COUNT(*) FROM trade_order o WHERE {where}", p);
         var ids = (await conn.QueryAsync<long>(

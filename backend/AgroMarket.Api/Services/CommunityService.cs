@@ -1,3 +1,4 @@
+using AgroMarket.Api.Common;
 using Dapper;
 using System.Text.Json;
 using AgroMarket.Api.Notifications;
@@ -64,7 +65,7 @@ public class CommunityService
                       p.like_count LikeCount, p.comment_count CommentCount, p.created_at CreatedAt
                FROM community_post p JOIN sys_user u ON u.id=p.user_id
                WHERE {where} ORDER BY {order} LIMIT @l OFFSET @o",
-            new { tp = topic, l = pageSize, o = (page - 1) * pageSize })).ToList();
+            new { tp = topic, l = pageSize, o = Paging.Offset(page, pageSize) })).ToList();
         return new Dtos.PagedResult<PostDto>(items, total, page, pageSize);
     }
 
@@ -204,7 +205,7 @@ public class CommunityService
                      p.like_count LikeCount, p.comment_count CommentCount, p.status Status, p.created_at CreatedAt
               FROM community_post p JOIN sys_user u ON u.id=p.user_id
               ORDER BY p.id DESC LIMIT @l OFFSET @o",
-            new { l = pageSize, o = (page - 1) * pageSize })).ToList();
+            new { l = pageSize, o = Paging.Offset(page, pageSize) })).ToList();
         return new Dtos.PagedResult<object>(items, total, page, pageSize);
     }
 

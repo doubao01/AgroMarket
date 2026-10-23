@@ -45,7 +45,7 @@ public class AdminService
         if (!string.IsNullOrWhiteSpace(role)) { w.Add("role=@r"); p.Add("r", role); }
         if (!string.IsNullOrWhiteSpace(status)) { w.Add("status=@s"); p.Add("s", status); }
         var where = w.Count > 0 ? "WHERE " + string.Join(" AND ", w) : "";
-        p.Add("limit", pageSize); p.Add("offset", (page - 1) * pageSize);
+        p.Add("limit", pageSize); p.Add("offset", Paging.Offset(page, pageSize));
         var total = await conn.ExecuteScalarAsync<long>($"SELECT COUNT(*) FROM sys_user {where}", p);
         var items = (await conn.QueryAsync<object>(
             $@"SELECT id, phone, nickname, role, status, home_region_id HomeRegionId, created_at CreatedAt, last_login_at LastLoginAt
@@ -73,7 +73,7 @@ public class AdminService
         var p = new DynamicParameters();
         var where = "";
         if (!string.IsNullOrWhiteSpace(status)) { where = "WHERE mp.audit_status=@s"; p.Add("s", status); }
-        p.Add("limit", pageSize); p.Add("offset", (page - 1) * pageSize);
+        p.Add("limit", pageSize); p.Add("offset", Paging.Offset(page, pageSize));
         var total = await conn.ExecuteScalarAsync<long>($"SELECT COUNT(*) FROM merchant_profile mp {where}", p);
         var items = (await conn.QueryAsync<object>(
             $@"SELECT mp.id, mp.user_id UserId, u.nickname, u.phone, mp.subject_type SubjectType, mp.subject_name SubjectName,
@@ -180,7 +180,7 @@ public class AdminService
         var p = new DynamicParameters();
         var where = "";
         if (!string.IsNullOrWhiteSpace(status)) { where = "WHERE status=@s"; p.Add("s", status); }
-        p.Add("limit", pageSize); p.Add("offset", (page - 1) * pageSize);
+        p.Add("limit", pageSize); p.Add("offset", Paging.Offset(page, pageSize));
         var total = await conn.ExecuteScalarAsync<long>($"SELECT COUNT(*) FROM report_complaint {where}", p);
         var items = (await conn.QueryAsync<Dtos.ReportDto>(
             $@"SELECT id, reporter_id ReporterId, target_type TargetType, target_id TargetId, reason Reason,

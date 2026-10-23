@@ -53,7 +53,7 @@ public class FavoriteService
                LEFT JOIN purchase_demand d ON f.target_type='DEMAND' AND d.id=f.target_id
                WHERE {w}
                ORDER BY f.id DESC LIMIT @limit OFFSET @offset",
-            new { uid = userId, tt = targetType, limit = pageSize, offset = (page - 1) * pageSize })).ToList();
+            new { uid = userId, tt = targetType, limit = pageSize, offset = Paging.Offset(page, pageSize) })).ToList();
         return new Dtos.PagedResult<Dtos.FavoriteDto>(
             rows.Select(r => new Dtos.FavoriteDto(r.Id, r.TargetType, r.TargetId, r.Title, r.Price, r.CreatedAt)).ToList(),
             total, page, pageSize);

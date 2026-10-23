@@ -117,7 +117,7 @@ public class SupplyService
         if (q.PageSize is < 1 or > 50) q.PageSize = 10;
         var (where, p) = await BuildWhereAsync(q);
         p.Add("limit", q.PageSize);
-        p.Add("offset", (q.Page - 1) * q.PageSize);
+        p.Add("offset", Paging.Offset(q.Page, q.PageSize));
         var orderBy = q.OrderBy switch
         {
             "price_asc" => "COALESCE(s.price, 99999999.99) ASC, s.id DESC",

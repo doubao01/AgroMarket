@@ -51,7 +51,7 @@ public class ChatService
         if (f is not (ChatFilter.All or ChatFilter.Unread)) f = ChatFilter.All;
 
         var total = await _repo.CountConversationsAsync(userId, f, keyword);
-        var items = await _repo.ListConversationsAsync(userId, f, keyword, pageSize, (page - 1) * pageSize);
+        var items = await _repo.ListConversationsAsync(userId, f, keyword, pageSize, (int)Paging.Offset(page, pageSize));
         return new PagedResult<ChatConversationDto>(items, total, page, pageSize);
     }
 

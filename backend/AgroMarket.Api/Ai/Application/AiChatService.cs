@@ -258,7 +258,7 @@ public class AiChatService
     {
         if (page < 1) page = 1;
         if (pageSize is < 1 or > 100) pageSize = 20;
-        var items = await _repo.ListAsync(userId, pageSize, (page - 1) * pageSize);
+        var items = await _repo.ListAsync(userId, pageSize, (int)Paging.Offset(page, pageSize));
         var total = await _repo.CountAsync(userId);
         return new AiConversationPageDto(items.Select(AiChatRepository.MapConversation).ToList(), total);
     }

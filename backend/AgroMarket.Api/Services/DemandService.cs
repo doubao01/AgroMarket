@@ -107,7 +107,7 @@ public class DemandService
         }
         else w.Add("d.status = 'ACTIVE'");
         var where = w.Count == 0 ? "1=1" : " AND " + string.Join(" AND ", w);
-        p.Add("limit", q.PageSize); p.Add("offset", (q.Page - 1) * q.PageSize);
+        p.Add("limit", q.PageSize); p.Add("offset", Paging.Offset(q.Page, q.PageSize));
         var orderBy = q.OrderBy switch
         {
             // 区间报价统一按最低价升序/降序, 避免区间两端语义混乱

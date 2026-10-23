@@ -31,7 +31,7 @@ public class MessageService
         var items = (await conn.QueryAsync<Dtos.MessageDto>(
             $@"SELECT id, sender_id SenderId, msg_type MsgType, title, content Content, biz_id BizId, is_read IsRead, created_at CreatedAt
                FROM user_message WHERE {where} ORDER BY id DESC LIMIT @limit OFFSET @offset",
-            new { uid = userId, limit = pageSize, offset = (page - 1) * pageSize })).ToList();
+            new { uid = userId, limit = pageSize, offset = Paging.Offset(page, pageSize) })).ToList();
         return new Dtos.PagedResult<Dtos.MessageDto>(items, total, page, pageSize);
     }
 
