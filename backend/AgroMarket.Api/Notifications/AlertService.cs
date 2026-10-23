@@ -17,7 +17,11 @@ public class AlertService
 
     public record AlertRule(string Code, bool Enabled, string ThresholdJson, int SuppressHours, string RecipientScope, DateTime UpdatedAt);
     public record AlertRecordDto(long Id, string RuleCode, long ObjectId, string Status, int HitCount, string? Detail, DateTime? ResolvedAt, DateTime CreatedAt);
-    public record ScanHit(long ObjectId, string Detail);
+    /// <summary>
+    /// 一条命中。ObjectType 用于区分不同表的同名 id: 供应#5 与采购#5 是两个对象,
+    /// 早期实现只按 (rule_code, object_id) 去重, 两者会互相抑制, 通知还会发错人。
+    /// </summary>
+    public record ScanHit(long ObjectId, string Detail, string ObjectType = "");
     public sealed class ScanSummary
     {
         /// <summary>本轮因为已有一轮在跑而直接跳过(跨进程互斥未取到锁)。</summary>
@@ -125,12 +129,22 @@ public class AlertService
         var conn = _db.Create();
 
         // 跨进程互斥: 后台定时器与管理员手动扫描会同时跑同一轮, 造成重复通知与重复落库。
-        // 用数据库命名锁(非阻塞)串行化, 锁随连接关闭自动释放。
-        var locked = await conn.ExecuteScalarAsync<int?>("SELECT GET_LOCK('agromarket_alert_scan', 0)") == 1;
-        if (!locked)
+        //
+        // GET_LOCK 是会话级的, 必须让整轮扫描跑在同一个物理会话上。这里显式 Open:
+        // Dapper 在连接处于 Closed 时会自己开一条、用完就关(实际是归还连接池),
+        // 池里的会话仍然活着, 于是锁被挂在某个闲置会话上 —— 下一次扫描如果拿到同一条
+        // 池化连接, GET_LOCK 会返回 0(自己已持锁), 扫描被永久判成 busy;
+        // 若拿到别的会话, 则会重复加锁。显式 Open 后 Dapper 不再关闭它, 语义才对。
+        conn.Open();
+        try
+        {
+            var locked = await conn.ExecuteScalarAsync<int?>("SELECT GET_LOCK('agromarket_alert_scan', 0)") == 1;
+            if (!locked) return new ScanSummary { Busy = true };
+        }
+        catch
         {
             conn.Dispose();
-            return new ScanSummary { Busy = true };
+            throw;
         }
 
         var rules = (await GetRulesAsync()).Where(r => r.Enabled).ToDictionary(r => r.Code, r => r);
@@ -187,13 +201,13 @@ public class AlertService
     private async Task<(bool recorded, bool suppressed)> RecordAndNotifyAsync(System.Data.IDbConnection conn, AlertRule rule, ScanHit hit)
     {
         var existing = await conn.QueryFirstOrDefaultAsync<(long Id, DateTime CreatedAt, DateTime? ResolvedAt)>(
-            "SELECT id, created_at CreatedAt, resolved_at ResolvedAt FROM alert_record WHERE rule_code=@r AND object_id=@o",
-            new { r = rule.Code, o = hit.ObjectId });
+            "SELECT id, created_at CreatedAt, resolved_at ResolvedAt FROM alert_record WHERE rule_code=@r AND object_type=@t AND object_id=@o",
+            new { r = rule.Code, t = hit.ObjectType, o = hit.ObjectId });
         if (existing.Id == 0)
         {
             await conn.ExecuteAsync(
-                "INSERT INTO alert_record (rule_code, object_id, status, detail) VALUES (@r, @o, 'OPEN', @d)",
-                new { r = rule.Code, o = hit.ObjectId, d = hit.Detail });
+                "INSERT INTO alert_record (rule_code, object_type, object_id, status, detail) VALUES (@r, @t, @o, 'OPEN', @d)",
+                new { r = rule.Code, t = hit.ObjectType, o = hit.ObjectId, d = hit.Detail });
             await NotifyReceiversAsync(conn, rule, hit);
             return (true, false);
         }
@@ -213,13 +227,14 @@ public class AlertService
 
     private async Task NotifyReceiversAsync(System.Data.IDbConnection conn, AlertRule rule, ScanHit hit)
     {
-        var receivers = await ResolveReceiversAsync(conn, rule.RecipientScope, rule.Code, hit.ObjectId);
+        var receivers = await ResolveReceiversAsync(conn, rule.RecipientScope, rule.Code, hit);
         foreach (var uid in receivers)
             await _push.NotifyAsync(uid, "ALERT", TitleOf(rule.Code), hit.Detail, hit.ObjectId);
     }
 
-    private async Task<List<long>> ResolveReceiversAsync(System.Data.IDbConnection conn, string scope, string ruleCode, long objectId)
+    private async Task<List<long>> ResolveReceiversAsync(System.Data.IDbConnection conn, string scope, string ruleCode, ScanHit hit)
     {
+        var objectId = hit.ObjectId;
         var ids = new List<long>();
         if (scope is "PARTY" or "PARTY_AND_ADMIN")
         {
@@ -237,9 +252,18 @@ public class AlertService
             ids.AddRange(await conn.QueryAsync<long>("SELECT id FROM sys_user WHERE role='ADMIN' AND status='ACTIVE'"));
         if (scope == "PUBLISHER")
         {
-            var pub = await conn.ExecuteScalarAsync<long?>(
-                "SELECT publisher_id FROM product_supply WHERE id=@o UNION SELECT publisher_id FROM purchase_demand WHERE id=@o", new { o = objectId });
-            if (pub != null) ids.Add(pub.Value);
+            // 早期实现用 UNION 一次查两张表, 同 id 时取到的是"随机那张表"的发布者, 会把通知发给不相干的人
+            var table = hit.ObjectType switch
+            {
+                "SUPPLY" => "product_supply",
+                "DEMAND" => "purchase_demand",
+                _ => null,
+            };
+            if (table != null)
+            {
+                var pub = await conn.ExecuteScalarAsync<long?>($"SELECT publisher_id FROM {table} WHERE id=@o", new { o = objectId });
+                if (pub != null) ids.Add(pub.Value);
+            }
         }
         return ids.Distinct().ToList();
     }
@@ -272,10 +296,11 @@ public class AlertService
               WHERE o.status='TO_PAY'
                 AND COALESCE(l.to_pay_at, o.created_at) < DATE_SUB(NOW(3), INTERVAL @h HOUR)
                 AND NOT EXISTS (SELECT 1 FROM alert_record ar
-                                WHERE ar.rule_code='ORDER_PAY_TIMEOUT' AND ar.object_id=o.id AND ar.resolved_at IS NULL)
+                                WHERE ar.rule_code='ORDER_PAY_TIMEOUT' AND ar.object_type='ORDER'
+                                  AND ar.object_id=o.id AND ar.resolved_at IS NULL)
               LIMIT 100",
             new { h = hours });
-        return rows.Select(r => new ScanHit(r.Id, $"订单 {r.OrderNo} 已超过 {hours} 小时未支付（金额 {r.Amount} 元），请及时处理")).ToList();
+        return rows.Select(r => new ScanHit(r.Id, $"订单 {r.OrderNo} 已超过 {hours} 小时未支付（金额 {r.Amount} 元），请及时处理", "ORDER")).ToList();
     }
 
     private async Task<List<ScanHit>> ScanQuoteNoResponseAsync(System.Data.IDbConnection conn, AlertRule rule)
@@ -288,10 +313,11 @@ public class AlertService
               FROM trade_quote q
               WHERE q.status='PENDING' AND q.created_at < DATE_SUB(NOW(3), INTERVAL @h HOUR)
                 AND NOT EXISTS (SELECT 1 FROM alert_record ar
-                                WHERE ar.rule_code='QUOTE_NO_RESPONSE' AND ar.object_id=q.id AND ar.resolved_at IS NULL)
+                                WHERE ar.rule_code='QUOTE_NO_RESPONSE' AND ar.object_type='QUOTE'
+                                  AND ar.object_id=q.id AND ar.resolved_at IS NULL)
               LIMIT 100",
             new { h = hours });
-        return rows.Select(r => new ScanHit(r.Id, $"报价 {r.QuoteNo}（{r.Price} 元/单位 x {r.Qty}）已超过 {hours} 小时未响应，请尽快处理")).ToList();
+        return rows.Select(r => new ScanHit(r.Id, $"报价 {r.QuoteNo}（{r.Price} 元/单位 x {r.Qty}）已超过 {hours} 小时未响应，请尽快处理", "QUOTE")).ToList();
     }
 
     private async Task<List<ScanHit>> ScanListingExpiredAsync(System.Data.IDbConnection conn)
@@ -300,14 +326,16 @@ public class AlertService
             @"SELECT s.id, s.title Title, 'SUPPLY' Kind FROM product_supply s
               WHERE s.status='ACTIVE' AND s.expire_at IS NOT NULL AND s.expire_at < NOW(3)
                 AND NOT EXISTS (SELECT 1 FROM alert_record ar
-                                WHERE ar.rule_code='LISTING_EXPIRED' AND ar.object_id=s.id AND ar.resolved_at IS NULL)
+                                WHERE ar.rule_code='LISTING_EXPIRED' AND ar.object_type='SUPPLY'
+                                  AND ar.object_id=s.id AND ar.resolved_at IS NULL)
               UNION ALL
               SELECT d.id, d.title, 'DEMAND' FROM purchase_demand d
               WHERE d.status='ACTIVE' AND d.expire_at IS NOT NULL AND d.expire_at < NOW(3)
                 AND NOT EXISTS (SELECT 1 FROM alert_record ar
-                                WHERE ar.rule_code='LISTING_EXPIRED' AND ar.object_id=d.id AND ar.resolved_at IS NULL)
+                                WHERE ar.rule_code='LISTING_EXPIRED' AND ar.object_type='DEMAND'
+                                  AND ar.object_id=d.id AND ar.resolved_at IS NULL)
               LIMIT 100");
-        return rows.Select(r => new ScanHit(r.Id, $"您的{(r.Kind == "SUPPLY" ? "供应" : "采购")}「{r.Title}」已过有效期，请及时续期或下架")).ToList();
+        return rows.Select(r => new ScanHit(r.Id, $"您的{(r.Kind == "SUPPLY" ? "供应" : "采购")}「{r.Title}」已过有效期，请及时续期或下架", r.Kind)).ToList();
     }
 
     private async Task<List<ScanHit>> ScanAuditBacklogAsync(System.Data.IDbConnection conn, AlertRule rule)

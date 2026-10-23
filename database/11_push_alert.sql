@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS alert_rule (
 CREATE TABLE IF NOT EXISTS alert_record (
   id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   rule_code   VARCHAR(40) NOT NULL,
+  object_type VARCHAR(20) NOT NULL DEFAULT '' COMMENT '业务对象类型: SUPPLY/DEMAND/ORDER/QUOTE, 汇总类规则为空',
   object_id   BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '业务对象ID; TRADE_ANOMALY 固定0',
   status      VARCHAR(20) NOT NULL DEFAULT 'OPEN' COMMENT 'OPEN/RESOLVED/MUTED',
   hit_count   INT NOT NULL DEFAULT 1,
@@ -28,7 +29,8 @@ CREATE TABLE IF NOT EXISTS alert_record (
   resolved_at DATETIME(3) NULL,
   created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
-  UNIQUE KEY uk_alert (rule_code, object_id),
+  -- 只按 (rule_code, object_id) 去重会让"供应#5"与"采购#5"互相抑制, 必须带类型维度
+  UNIQUE KEY uk_alert_v2 (rule_code, object_type, object_id),
   KEY idx_alert_created (created_at),
   CONSTRAINT fk_alert_rule FOREIGN KEY (rule_code) REFERENCES alert_rule(code)
 ) ENGINE=InnoDB COMMENT='报警记录表';
