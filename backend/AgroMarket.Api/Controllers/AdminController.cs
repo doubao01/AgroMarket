@@ -153,7 +153,11 @@ public class AdminController : ControllerBase
     public async Task<ActionResult<ApiResponse<object>>> CloseExpiredOrders()
     {
         var worker = HttpContext.RequestServices.GetRequiredService<AgroMarket.Api.Notifications.OrderTimeoutWorker>();
-        var closed = await worker.RunOnceAsync();
+        var (closed, busy) = await worker.RunOnceAsync();
+        // 命名锁被占用说明后台循环或另一实例正在跑: 不能回"已关闭 0 个"冒充成功,
+        // 运维会误判为"没有积压"。
+        if (busy)
+            return Conflict(ApiResponse<object>.Fail(ErrorCodes.Conflict, "超时任务正在进行中, 请稍后重试"));
         return Ok(ApiResponse<object>.Ok(new { closed }, $"已关闭 {closed} 个超时订单"));
     }
 

@@ -23,10 +23,20 @@ INSERT IGNORE INTO sys_user (id, phone, password_hash, nickname, role, contact_d
 INSERT IGNORE INTO sys_user_role (user_id, role) VALUES
 (1,'ADMIN'),(2,'FARMER'),(3,'BUYER'),(4,'COOP');
 
--- 用户常驻区域
-UPDATE sys_user SET home_region_id = 31 WHERE id = 2;
-UPDATE sys_user SET home_region_id = 20 WHERE id = 3;
-UPDATE sys_user SET home_region_id = 3  WHERE id = 4;
+-- 守卫: 若 2/3/4 号 id 已被别的手机号占用(在非空库上误跑本文件), 立即报错终止,
+-- 绝不去改真实用户的常驻区域。子查询返回多行是刻意的报错手段。
+SET @guard = (
+  SELECT IF(COUNT(*) = 0, 0, (SELECT 1 UNION SELECT 2))
+  FROM sys_user
+  WHERE (id = 2 AND phone <> '13800000002')
+     OR (id = 3 AND phone <> '13800000003')
+     OR (id = 4 AND phone <> '13800000004')
+);
+
+-- 用户常驻区域(只动演示账号本身)
+UPDATE sys_user SET home_region_id = 31 WHERE id = 2 AND phone = '13800000002';
+UPDATE sys_user SET home_region_id = 20 WHERE id = 3 AND phone = '13800000003';
+UPDATE sys_user SET home_region_id = 3  WHERE id = 4 AND phone = '13800000004';
 
 -- ---------- 演示供应/采购数据 (标记为演示数据, 非真实交易) ----------
 INSERT IGNORE INTO product_supply (id, publisher_id, title, category_id, description, quantity, unit, price, price_unit, negotiable, min_order_qty, county_id, town_id, village_id, spec, harvest_time, delivery_mode, contact_phone, status, effective_days) VALUES

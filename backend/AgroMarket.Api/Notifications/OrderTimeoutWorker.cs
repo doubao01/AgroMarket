@@ -58,8 +58,8 @@ public class OrderTimeoutWorker : BackgroundService
     private int ConfirmHours() => Math.Max(1, _cfg.GetValue<int?>("Order:ConfirmTimeoutHours") ?? 48);
     private int PayHours() => Math.Max(1, _cfg.GetValue<int?>("Order:PayTimeoutHours") ?? 24);
 
-    /// <summary>执行一轮超时关闭。返回本次关闭的订单数。</summary>
-    public async Task<int> RunOnceAsync(CancellationToken ct = default)
+    /// <summary>执行一轮超时关闭。Busy=true 表示命名锁被占用(另一个实例或后台循环正在跑), 此时 Closed 无意义。</summary>
+    public async Task<(int Closed, bool Busy)> RunOnceAsync(CancellationToken ct = default)
     {
         using var conn = _db.Create();
         // GET_LOCK 是会话级的, 必须显式 Open 保证加锁/查询/解锁落在同一个物理连接上
@@ -67,17 +67,20 @@ public class OrderTimeoutWorker : BackgroundService
         conn.Open();
 
         var locked = await conn.ExecuteScalarAsync<int?>($"SELECT GET_LOCK('{LockName}', 0)") == 1;
-        if (!locked) return 0;
+        if (!locked) return (0, true);
 
         try
         {
             using var scope = _scopes.CreateScope();
             var trade = scope.ServiceProvider.GetRequiredService<TradeService>();
             var sw = Stopwatch.StartNew();
-            // 只取 id, 具体关闭在 CancelExpiredAsync 内用自己的事务与行锁完成
+            // 只取 id, 具体关闭在 CancelExpiredAsync 内用自己的事务与行锁完成。
+            // 演示数据(is_demo=1)不参与自动关闭: 否则演示库里的样板订单会在 48h 后被
+            // 后台任务悄悄改成 CANCELLED 并回补库存, 演示环境过一夜就"自己变了"。
             var confirmIds = await conn.QueryAsync<long>(
                 @"SELECT id FROM trade_order
-                  WHERE status='PENDING_CONFIRM' AND created_at < DATE_SUB(NOW(3), INTERVAL @h HOUR)
+                  WHERE status='PENDING_CONFIRM' AND is_demo=0
+                    AND created_at < DATE_SUB(NOW(3), INTERVAL @h HOUR)
                   ORDER BY id LIMIT 200", new { h = ConfirmHours() });
 
             // 待付款的计时基准是"进入 TO_PAY"的时间而非下单时间(卖方可能隔天才确认),
@@ -88,7 +91,8 @@ public class OrderTimeoutWorker : BackgroundService
                       SELECT order_id, MAX(created_at) AS to_pay_at
                       FROM trade_order_status_log WHERE to_status='TO_PAY' GROUP BY order_id
                   ) l ON l.order_id = o.id
-                  WHERE o.status='TO_PAY' AND COALESCE(l.to_pay_at, o.created_at) < DATE_SUB(NOW(3), INTERVAL @h HOUR)
+                  WHERE o.status='TO_PAY' AND o.is_demo=0
+                    AND COALESCE(l.to_pay_at, o.created_at) < DATE_SUB(NOW(3), INTERVAL @h HOUR)
                   ORDER BY o.id LIMIT 200", new { h = PayHours() });
 
             var closed = 0;
@@ -121,7 +125,7 @@ public class OrderTimeoutWorker : BackgroundService
 
             if (closed > 0)
                 _logger.LogInformation("order timeout closed={Closed} elapsed={Elapsed}ms", closed, sw.ElapsedMilliseconds);
-            return closed;
+            return (closed, false);
         }
         finally
         {

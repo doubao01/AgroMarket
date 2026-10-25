@@ -55,32 +55,39 @@ public class PaymentService
             if (o.BuyerId != userId) throw new BizException("只有买方可以发起支付", ErrorCodes.Forbidden);
             if (o.Status != "TO_PAY") throw new BizException($"订单状态 [{o.Status}] 不可支付", ErrorCodes.Conflict);
 
-            // 幂等: 连点/重试不得刷出多张可支付单。
-            // 先按客户端幂等键精确命中; 没有 token 时退化为"该订单该渠道已有一张未支付单就复用",
-            // 保证同一订单在任一时刻至多一张待支付记录。
+            // 不变量: 同一订单同一渠道在任一时刻至多一条待支付记录(与 token 无关)。
+            // 早期版本只在"没带 token"时才复用 INIT, 换一个新 token 就能再插一条 —— 真实
+            // 渠道下每张 INIT 都是独立可支付凭证, 同一笔订单会被收两次钱, 且回调按 id 只认
+            // 最早那张, 真实交易号会记到旧单上。因此先无条件找 INIT, 没有再按 token 找历史
+            // 记录(可能已支付)。
             var token = string.IsNullOrWhiteSpace(req.ClientToken) ? null : req.ClientToken.Trim();
-            var existing = await conn.QueryFirstOrDefaultAsync<(long Id, string Status, string? TradeNo)>(
-                token != null
-                    ? "SELECT id, status, trade_no FROM payment_record WHERE order_id=@oid AND channel=@ch AND client_token=@tk FOR UPDATE"
-                    : "SELECT id, status, trade_no FROM payment_record WHERE order_id=@oid AND channel=@ch AND status='INIT' ORDER BY id DESC LIMIT 1 FOR UPDATE",
+            if (token is { Length: > 64 })
+                throw new BizException("clientToken 过长, 最多 64 字符", ErrorCodes.BadRequest);
+
+            var existing = await conn.QueryFirstOrDefaultAsync<(long Id, string Status, string? TradeNo, string? PayUrl)>(
+                @"SELECT id, status, trade_no, pay_url FROM payment_record
+                  WHERE order_id=@oid AND channel=@ch
+                    AND (status='INIT' OR (@tk IS NOT NULL AND client_token=@tk))
+                  ORDER BY (status='INIT') DESC, id DESC LIMIT 1 FOR UPDATE",
                 new { oid = o.Id, ch = channel, tk = token }, tx);
 
             PaymentInitResult result;
             long payId;
             if (existing.Id != 0)
             {
-                // 命中已有记录: 未支付则复用(不再向渠道重复下单), 已支付则直接返回原单
-                result = new PaymentInitResult(existing.Status == "SUCCESS", existing.TradeNo, null);
+                // 命中已有记录: 未支付则复用(不再向渠道重复下单), 已支付则直接返回原单。
+                // pay_url 必须一并回传, 否则用户关页重进后拿到 null, 无码可扫、这笔钱付不出去。
+                result = new PaymentInitResult(existing.Status == "SUCCESS", existing.TradeNo, existing.PayUrl);
                 payId = existing.Id;
             }
             else
             {
                 result = await provider.CreateAsync(o.Id, o.OrderNo, o.TotalAmount, ct);
                 payId = await conn.ExecuteScalarAsync<long>(@"
-                    INSERT INTO payment_record (order_id, channel, client_token, trade_no, amount, status, callback_raw)
-                    VALUES (@oid, @ch, @tk, @tn, @amt, @st, NULL); SELECT LAST_INSERT_ID();",
-                    new { oid = o.Id, ch = channel, tk = token, tn = result.TradeNo, amt = o.TotalAmount,
-                          st = result.Success ? "SUCCESS" : "INIT" }, tx);
+                    INSERT INTO payment_record (order_id, channel, client_token, trade_no, pay_url, amount, status, callback_raw)
+                    VALUES (@oid, @ch, @tk, @tn, @pu, @amt, @st, NULL); SELECT LAST_INSERT_ID();",
+                    new { oid = o.Id, ch = channel, tk = token, tn = result.TradeNo, pu = result.PayUrl,
+                          amt = o.TotalAmount, st = result.Success ? "SUCCESS" : "INIT" }, tx);
             }
 
             // 用带状态条件的 UPDATE 判定"是否由本次调用真正推进了订单": 受影响行数为 1 才写状态日志。
@@ -146,13 +153,17 @@ public class PaymentService
                 if (o.Status == "CANCELLED")
                 {
                     // 钱收了但单已取消: 必须留下退款标记, 否则资损且无人知晓。
-                    // 早期实现这里直接 return true 静默放过。
-                    await MarkRefundRequiredAsync(conn, tx, o.Id, key, result.TradeNo, result.RawPayload);
+                    var firstTime = await MarkRefundRequiredAsync(conn, tx, o.Id, key, result.TradeNo, result.RawPayload);
                     tx.Commit();
-                    _logger.LogWarning("payment received for cancelled order {OrderId} via {Channel}, refund flag set", o.Id, key);
-                    await _alerts.NotifyAdminsAsync("退款待处理",
-                        $"订单 #{o.Id} 已取消但收到 {key} 渠道付款 {o.TotalAmount} 元, 已标记待退款", o.Id);
-                    return false;
+                    // 只在首次标记时告警: 渠道会重试回调, 每次都通知会把管理员消息刷爆
+                    if (firstTime)
+                    {
+                        _logger.LogWarning("payment received for cancelled order {OrderId} via {Channel}, refund flag set", o.Id, key);
+                        await _alerts.NotifyAdminsAsync("退款待处理",
+                            $"订单 #{o.Id} 已取消但收到 {key} 渠道付款 {o.TotalAmount} 元, 已标记待退款", o.Id);
+                    }
+                    // 回 ACK: 钱确实收到了, 回 false 会让渠道无限重试同一笔回调
+                    return true;
                 }
                 tx.Commit();
                 return true;
@@ -197,7 +208,8 @@ public class PaymentService
     /// 钱已收但订单已被取消(回调晚于取消, 或渠道重复回调): 落一条待退款标记。
     /// 只标记不退款 —— 真实退款必须走渠道接口, 这里保证"有痕迹、可被管理员查到"。
     /// </summary>
-    private static async Task MarkRefundRequiredAsync(System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
+    /// <returns>true 表示本次才第一次打上退款标记(用于避免重复告警)</returns>
+    private static async Task<bool> MarkRefundRequiredAsync(System.Data.IDbConnection conn, System.Data.IDbTransaction tx,
         long orderId, string channel, string? tradeNo, string? raw)
     {
         var hit = await conn.ExecuteAsync(@"
@@ -206,18 +218,18 @@ public class PaymentService
             WHERE order_id=@oid AND channel=@ch AND status='INIT'
             ORDER BY id LIMIT 1",
             new { oid = orderId, ch = channel, tn = tradeNo, raw = raw }, tx);
-        if (hit == 0)
-        {
-            // 没有 INIT 单说明该渠道此前已记录过一次收款: 已标记退款则不重复插入
-            var exists = await conn.ExecuteScalarAsync<int?>(
-                "SELECT 1 FROM payment_record WHERE order_id=@oid AND channel=@ch AND status='SUCCESS' AND refund_status='PENDING' LIMIT 1",
-                new { oid = orderId, ch = channel }, tx);
-            if (exists != null) return;
-            await conn.ExecuteAsync(@"
-                INSERT INTO payment_record (order_id, channel, trade_no, amount, status, refund_status, callback_raw)
-                SELECT @oid, @ch, @tn, total_amount, 'SUCCESS', 'PENDING', @raw FROM trade_order WHERE id=@oid",
-                new { oid = orderId, ch = channel, tn = tradeNo, raw = raw }, tx);
-        }
+        if (hit > 0) return true;
+
+        // 没有 INIT 单说明该渠道此前已记录过一次收款: 已标记退款则不重复插入
+        var exists = await conn.ExecuteScalarAsync<int?>(
+            "SELECT 1 FROM payment_record WHERE order_id=@oid AND channel=@ch AND status='SUCCESS' AND refund_status='PENDING' LIMIT 1",
+            new { oid = orderId, ch = channel }, tx);
+        if (exists != null) return false;
+        await conn.ExecuteAsync(@"
+            INSERT INTO payment_record (order_id, channel, trade_no, amount, status, refund_status, callback_raw)
+            SELECT @oid, @ch, @tn, total_amount, 'SUCCESS', 'PENDING', @raw FROM trade_order WHERE id=@oid",
+            new { oid = orderId, ch = channel, tn = tradeNo, raw = raw }, tx);
+        return true;
     }
 
     public async Task<List<PaymentDto>> ListByOrderAsync(long userId, long orderId)

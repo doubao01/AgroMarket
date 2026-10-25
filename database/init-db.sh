@@ -25,41 +25,34 @@ if [ -n "$DB_PASS" ]; then
   MYSQL_CMD+=(-p"$DB_PASS")
 fi
 
-echo "[1/11] 执行表结构脚本 01_schema.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/01_schema.sql"
+DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "[2/11] 执行种子数据脚本 02_seed.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/02_seed.sql"
+# 按文件名顺序执行 01..99。早期版本把文件名一个个写死, 新增迁移(13/14/15)时漏同步,
+# 存量库照着 README 升级就会缺列, 支付与报警直接 1054。改成通配, 新增迁移无需再改本脚本。
+SQL_FILES=$(ls "$DIR"/[0-9][0-9]_*.sql | sort)
+if [ -z "$SQL_FILES" ]; then
+  echo "错误: 未在 $DIR 找到迁移脚本" >&2
+  exit 1
+fi
 
-echo "[3/11] 执行聊天模块迁移 03_chat.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/03_chat.sql"
+i=0
+total=$(echo "$SQL_FILES" | wc -l | tr -d " ")
+for f in $SQL_FILES; do
+  name=$(basename "$f")
+  # 99_demo_seed.sql 含公开口令的测试账号, 默认不执行(mirror docker-init.sh)
+  case "$name" in
+    99_*)
+      if [ "${SEED_DEMO:-0}" != "1" ]; then
+        echo "skip $name (SEED_DEMO != 1)"
+        continue
+      fi
+      ;;
+  esac
+  i=$((i+1))
+  echo "[$i/$total] 执行 $name"
+  "${MYSQL_CMD[@]}" < "$f"
+done
 
-echo "[4/11] 执行聊天增强迁移 04_chat_wechat.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/04_chat_wechat.sql"
-
-echo "[5/11] 执行 AI 对话迁移 05_ai_chat.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/05_ai_chat.sql"
-
-echo "[6/11] 执行聊天维护迁移 06_chat_cleanup.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/06_chat_cleanup.sql"
-
-echo "[7/11] 执行节点联动迁移 07_federation.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/07_federation.sql"
-
-echo "[8/11] 执行节点联动非对称密钥迁移 08_federation_keys.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/08_federation_keys.sql"
-
-echo "[9/11] 执行节点联动运行时设置迁移 09_federation_settings.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/09_federation_settings.sql"
-
-echo "[10/11] 执行市场增强迁移 10_market_enhance.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/10_market_enhance.sql"
-
-echo "[11/12] 执行消息推送与报警迁移 11_push_alert.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/11_push_alert.sql"
-
-echo "[12/12] 执行社区与焦点图迁移 12_community.sql"
-"${MYSQL_CMD[@]}" < "$(dirname "$0")/12_community.sql"
 
 echo "数据库初始化完成: agro_market"
 "${MYSQL_CMD[@]}" -e "USE agro_market; SELECT region_level, COUNT(*) AS cnt FROM sys_region GROUP BY region_level ORDER BY region_level;"

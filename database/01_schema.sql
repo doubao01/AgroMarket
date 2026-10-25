@@ -442,6 +442,7 @@ CREATE TABLE IF NOT EXISTS payment_record (
   channel      VARCHAR(20) NOT NULL,
   client_token VARCHAR(64) NULL COMMENT '客户端幂等键',
   trade_no     VARCHAR(64) NULL,
+  pay_url      VARCHAR(1024) NULL COMMENT '渠道返回的支付地址/二维码内容',
   amount       DECIMAL(14,2) NOT NULL,
   status       VARCHAR(20) NOT NULL DEFAULT 'INIT' COMMENT 'INIT/SUCCESS/FAILED/REFUNDED',
   refund_status VARCHAR(20) NOT NULL DEFAULT '' COMMENT '空/ PENDING / DONE',

@@ -14,9 +14,10 @@ public class TradeService
     private readonly RegionService _regions;
     private readonly MessageService _messages;
     private readonly bool _isDemo;
+    private readonly IConfiguration _cfg;
 
-    public TradeService(IDbConnectionFactory db, RegionService regions, MessageService messages, IWebHostEnvironment env)
-    { _db = db; _regions = regions; _messages = messages; _isDemo = env.IsDevelopment(); }
+    public TradeService(IDbConnectionFactory db, RegionService regions, MessageService messages, IWebHostEnvironment env, IConfiguration cfg)
+    { _db = db; _regions = regions; _messages = messages; _isDemo = env.IsDevelopment(); _cfg = cfg; }
 
     private static async Task ValidateQuantityAsync(IDbConnection conn, long? supplyId, long? demandId,
         decimal quantity, decimal price, string priceUnit, IDbTransaction? tx = null)
@@ -514,6 +515,24 @@ public class TradeService
                 new { id = orderId }, tx);
             if (o == default) { tx.Rollback(); return false; }
             if (o.Status is not ("PENDING_CONFIRM" or "TO_PAY")) { tx.Rollback(); return false; }
+
+            // 以"当前"状态复核超时阈值, 不信任调用方落快照时的判断。
+            // worker 是"先取快照再逐条关闭": 快照与处理之间卖方可能刚点了确认
+            // (PENDING_CONFIRM -> TO_PAY), 此时订单才进入待付款, 却仍会被按 48h 规则关掉,
+            // 用户看到的是"超过 48 小时未确认"而实际刚确认过。待付款的计时基准是
+            // "进入 TO_PAY 的时间", 不是下单时间。
+            var timeoutHours = o.Status == "TO_PAY"
+                ? Math.Max(1, _cfg.GetValue<int?>("Order:PayTimeoutHours") ?? 24)
+                : Math.Max(1, _cfg.GetValue<int?>("Order:ConfirmTimeoutHours") ?? 48);
+            var expired = await conn.ExecuteScalarAsync<bool>(@"
+                SELECT EXISTS(SELECT 1 FROM trade_order o2 WHERE o2.id=@id AND CASE o2.status
+                    WHEN 'TO_PAY' THEN COALESCE((SELECT MAX(l.created_at) FROM trade_order_status_log l
+                        WHERE l.order_id=o2.id AND l.to_status='TO_PAY'), o2.created_at)
+                    ELSE o2.created_at END < DATE_SUB(NOW(3), INTERVAL @h HOUR))",
+                new { id = orderId, h = timeoutHours }, tx);
+            if (!expired) { tx.Rollback(); return false; }
+            // 关闭说明按当前状态生成, 避免"刚确认却被说成 48 小时未确认"
+            reason = o.Status == "TO_PAY" ? $"超过 {timeoutHours} 小时未支付, 系统自动关闭" : $"超过 {timeoutHours} 小时未确认, 系统自动关闭";
             // 已支付的绝不自动取消: 钱在账上, 关闭会产生无退款死局
             var paid = await conn.ExecuteScalarAsync<bool>(
                 "SELECT EXISTS(SELECT 1 FROM payment_record WHERE order_id=@oid AND status='SUCCESS')",
