@@ -13,6 +13,10 @@ public class UserService
     {
         if (req.Role != null && req.Role is not ("FARMER" or "BUYER" or "COOP" or "ENTERPRISE"))
             throw new BizException("经营类型不合法");
+        // 头像地址是前端直接回传的字符串, 不校验就能把任意外链(甚至 javascript:)写进资料页,
+        // 由平台原样渲染给其他用户; 因此只接受本服务 /uploads/ 下的真实文件地址。
+        if (!string.IsNullOrWhiteSpace(req.AvatarUrl) && !StorageService.IsOwnUploadUrl(req.AvatarUrl))
+            throw new BizException("头像地址无效, 请重新上传");
         if (req.HomeRegionId != null)
         {
             var regionService = new RegionService(_db);
@@ -62,6 +66,8 @@ public class UserService
         if (req.SubjectType is not ("PERSONAL" or "COOP" or "ENTERPRISE"))
             throw new BizException("主体类型不合法");
         if (string.IsNullOrWhiteSpace(req.SubjectName)) throw new BizException("请填写主体名称");
+        if (!string.IsNullOrWhiteSpace(req.LicenseUrl) && !StorageService.IsOwnUploadUrl(req.LicenseUrl))
+            throw new BizException("证件照地址无效, 请重新上传");
         using var conn = _db.Create();
         var existing = await conn.QueryFirstOrDefaultAsync<(long Id, string Status)>(
             "SELECT id, audit_status FROM merchant_profile WHERE user_id=@u ORDER BY id DESC LIMIT 1", new { u = userId });

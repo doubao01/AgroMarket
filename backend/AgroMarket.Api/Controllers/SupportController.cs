@@ -158,10 +158,20 @@ public class FileController : ControllerBase
     /// <summary>单文件上传(小文件直传)。</summary>
     [HttpPost("upload")]
     [RequireAuth]
+    [RequestSizeLimit(12 * 1024 * 1024)]
     public async Task<ActionResult<ApiResponse<object>>> Upload(IFormFile file)
     {
-        var url = await _storage.SaveImageAsync(file);
+        var url = await _storage.SaveImageAsync(HttpContext.User().Id, file);
         return Ok(ApiResponse<object>.Ok(new { url }, "上传成功"));
+    }
+
+    /// <summary>删除自己上传的文件(更换头像/撤回资料后清理)。</summary>
+    [HttpDelete("upload")]
+    [RequireAuth]
+    public async Task<ActionResult<ApiResponse<object>>> DeleteUpload([FromQuery] string url)
+    {
+        await _storage.DeleteByUrlAsync(HttpContext.User().Id, url);
+        return Ok(ApiResponse<object>.Ok(null, "已删除"));
     }
 
     /// <summary>初始化分片上传会话, 返回分片大小与总分片数。</summary>
@@ -169,7 +179,7 @@ public class FileController : ControllerBase
     [RequireAuth]
     public async Task<ActionResult<ApiResponse<UploadInitResult>>> UploadInit([FromBody] UploadInitRequest req)
     {
-        var r = await _storage.InitUploadAsync(req.FileName, req.FileSize);
+        var r = await _storage.InitUploadAsync(HttpContext.User().Id, req.FileName, req.FileSize);
         return Ok(ApiResponse<UploadInitResult>.Ok(r, "已创建上传会话"));
     }
 
@@ -178,7 +188,7 @@ public class FileController : ControllerBase
     [RequireAuth]
     public async Task<ActionResult<ApiResponse<UploadStatus>>> UploadStatus([FromQuery] string uploadId)
     {
-        var r = await _storage.GetStatusAsync(uploadId);
+        var r = await _storage.GetStatusAsync(HttpContext.User().Id, uploadId);
         return Ok(ApiResponse<UploadStatus>.Ok(r));
     }
 
@@ -188,7 +198,7 @@ public class FileController : ControllerBase
     [RequestSizeLimit(16 * 1024 * 1024)]
     public async Task<ActionResult<ApiResponse<object>>> UploadChunk([FromForm] string uploadId, [FromForm] int index, IFormFile file)
     {
-        var uploaded = await _storage.SaveChunkAsync(uploadId, index, file);
+        var uploaded = await _storage.SaveChunkAsync(HttpContext.User().Id, uploadId, index, file);
         return Ok(ApiResponse<object>.Ok(new { uploadedChunks = uploaded }, "分片上传成功"));
     }
 
@@ -197,7 +207,7 @@ public class FileController : ControllerBase
     [RequireAuth]
     public async Task<ActionResult<ApiResponse<object>>> UploadComplete([FromBody] UploadCompleteRequest req)
     {
-        var url = await _storage.CompleteUploadAsync(req.UploadId);
+        var url = await _storage.CompleteUploadAsync(HttpContext.User().Id, req.UploadId);
         return Ok(ApiResponse<object>.Ok(new { url }, "上传成功"));
     }
 }

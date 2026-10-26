@@ -180,6 +180,17 @@ var corsOrigins = builder.Configuration.GetSection("CorsOrigins").Get<string[]>(
 builder.Services.AddCors(o => o.AddPolicy("web", p => p
     .WithOrigins(corsOrigins).AllowAnyHeader().AllowAnyMethod()));
 
+
+// 请求体上限: 上传接口按声明大小限制, 但 multipart 的"声明"在解析阶段才生效,
+// 若不在这里兜底, 一个超大请求会先把内存/磁盘写满再被业务层拒绝。
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(o =>
+{
+    o.MultipartBodyLengthLimit = 12L * 1024 * 1024;
+    o.ValueLengthLimit = 1024 * 1024;
+    o.MultipartHeadersLengthLimit = 16 * 1024;
+});
+builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = 14L * 1024 * 1024);
+
 var app = builder.Build();
 
 // 静态文件: 上传的图片
@@ -189,6 +200,17 @@ app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(uploadRoot),
     RequestPath = "/uploads",
+    ContentTypeProvider = new UploadContentTypeProvider(),
+    // 只允许按扩展名映射的类型被返回, 且补 nosniff:
+    // 没有 nosniff 时, 浏览器可能把 image/* 嗅探成 text/html 并按页面渲染,
+    // 于是一个"JPEG 头 + HTML 正文"的 polyglot 文件就能在站点同源下执行脚本。
+    OnPrepareResponse = ctx =>
+    {
+        var h = ctx.Context.Response.Headers;
+        h["X-Content-Type-Options"] = "nosniff";
+        h["Content-Security-Policy"] = "default-src 'none'; sandbox";
+        h["Cache-Control"] = "public, max-age=86400";
+    },
 });
 
 if (app.Environment.IsDevelopment())

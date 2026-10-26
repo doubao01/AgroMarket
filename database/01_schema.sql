@@ -434,6 +434,20 @@ CREATE TABLE IF NOT EXISTS sys_sms_code (
 ) ENGINE=InnoDB COMMENT='短信验证码记录';
 
 -- ---------------------------------------------------------------
+-- ---------------------------------------------------------------
+-- 19b. sys_upload 上传文件归属登记
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sys_upload (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id    BIGINT UNSIGNED NOT NULL COMMENT '上传者',
+  url        VARCHAR(255) NOT NULL COMMENT '对外地址 /uploads/yyyyMMdd/<32位>.<ext>',
+  size_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '净化后大小',
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_su_url (url),
+  KEY idx_su_user (user_id, created_at)
+) ENGINE=InnoDB COMMENT='上传文件归属登记';
+
 -- 20. payment_record 支付记录 (预留, 仅真实渠道接入后启用)
 -- ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS payment_record (
