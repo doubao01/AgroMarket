@@ -34,9 +34,15 @@ public class StorageService
     /// <summary>单个分片会话的最大临时占用(按声明大小的 1.2 倍放宽)。</summary>
     private const double TempWasteFactor = 1.2;
 
+    /// <summary>证件材料等私有文件的子目录。静态服务会拒绝该前缀(见 UploadsFileProvider)。</summary>
+    private const string PrivateDir = ".private";
+    /// <summary>私有文件签名有效期。</summary>
+    private static readonly TimeSpan SignTtl = TimeSpan.FromMinutes(10);
+
+
     // ---------- 单文件上传 ----------
 
-    public async Task<string> SaveImageAsync(long userId, IFormFile file)
+    public async Task<string> SaveImageAsync(long userId, IFormFile file, bool isPrivate = false)
     {
         if (file.Length == 0) throw new BizException("文件为空");
         if (file.Length > MaxMb * 1024L * 1024L) throw new BizException($"文件不能超过 {MaxMb}MB");
@@ -46,7 +52,7 @@ public class StorageService
         using var ms = new MemoryStream((int)Math.Min(file.Length, int.MaxValue));
         await file.CopyToAsync(ms);
         var clean = ImageSanitizer.Sanitize(ms.ToArray(), ext);
-        return await PersistAsync(userId, clean, ext);
+        return await PersistAsync(userId, clean, ext, isPrivate);
     }
 
     // ---------- 分片上传(断点续传) ----------
@@ -176,9 +182,9 @@ public class StorageService
     /// </summary>
     public static bool IsOwnUploadUrl(string? url)
     {
-        if (string.IsNullOrWhiteSpace(url)) return false;
-        const string prefix = "/uploads/";
-        if (!url.StartsWith(prefix, StringComparison.Ordinal)) return false;
+        // 私有证件材料存的是 /api/files/private/... , 必须同样接受, 否则提交认证会被判"地址无效"
+        var prefix = IsPrivateUrl(url) ? "/api/files/private/" : "/uploads/";
+        if (!url!.StartsWith(prefix, StringComparison.Ordinal)) return false;
         var parts = url[prefix.Length..].Split('/');
         if (parts.Length != 2) return false;
         if (parts[0].Length != 8 || !parts[0].All(char.IsAsciiDigit)) return false;
@@ -186,7 +192,70 @@ public class StorageService
         return Path.GetFileNameWithoutExtension(parts[1]).Length == 32;
     }
 
-    /// <summary>把本服务地址解析为磁盘绝对路径; 非法或越界返回 null。</summary>
+    // ---------- 私有文件: 签名地址 ----------
+
+    /// <summary>
+    /// 把私有文件地址变成带签名的临时地址。
+    /// 用签名而不是"要求登录头"的原因: 小程序与 <image> 组件都没法给图片请求带 Authorization,
+    /// 强鉴权会逼前端改成 fetch+blob; 签名放在 query 里则前端零改动, 而地址本身不可伪造、10 分钟过期。
+    /// </summary>
+    public string SignPrivateUrl(string url)
+    {
+        if (!IsPrivateUrl(url)) return url;
+        var exp = DateTimeOffset.UtcNow.Add(SignTtl).ToUnixTimeSeconds();
+        return $"{url}?e={exp}&s={Sign(url, exp)}";
+    }
+
+    /// <summary>校验签名与有效期。</summary>
+    public bool VerifyPrivateUrl(string url, string? expText, string? sig)
+    {
+        if (!IsPrivateUrl(url) || !long.TryParse(expText, out var exp) || string.IsNullOrEmpty(sig)) return false;
+        if (DateTimeOffset.UtcNow.ToUnixTimeSeconds() > exp) return false;
+        var expected = Sign(url, exp);
+        // 定长时间比较, 避免按字节差异逐步试出签名
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.ASCII.GetBytes(expected), System.Text.Encoding.ASCII.GetBytes(sig.ToLowerInvariant()));
+    }
+
+    private string Sign(string url, long exp)
+    {
+        var key = _cfg["Storage:SignKey"] ?? _cfg["Jwt:SecretKey"]
+                  ?? throw new BizException("存储签名密钥未配置");
+        var mac = System.Security.Cryptography.HMACSHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(key),
+            System.Text.Encoding.UTF8.GetBytes($"{url}|{exp}"));
+        return Convert.ToHexString(mac).ToLowerInvariant()[..32];
+    }
+
+    /// <summary>是否是本服务签发的私有文件地址。</summary>
+    public static bool IsPrivateUrl(string? url)
+        => !string.IsNullOrEmpty(url) && url.StartsWith("/api/files/private/", StringComparison.Ordinal);
+
+    /// <summary>把 /api/files/private/yyyyMMdd/name.ext 解析为磁盘路径; 非法返回 null。</summary>
+    public string? ResolvePrivatePath(string? url)
+    {
+        if (!IsPrivateUrl(url)) return null;
+        var rel = url!["/api/files/private/".Length..];
+        var parts = rel.Split('/');
+        if (parts.Length != 2) return null;
+        if (parts[0].Length != 8 || !parts[0].All(char.IsAsciiDigit)) return null;
+        if (!AllowedExt.Contains(Path.GetExtension(parts[1]).ToLowerInvariant())) return null;
+        if (Path.GetFileNameWithoutExtension(parts[1]).Length != 32) return null;
+        var full = Path.GetFullPath(Path.Combine(Root, PrivateDir, parts[0], parts[1]));
+        var baseDir = Path.GetFullPath(Path.Combine(Root, PrivateDir));
+        return full.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase) ? full : null;
+    }
+
+    /// <summary>私有文件的 Content-Type(只按白名单回图片类型)。</summary>
+    public static string ContentTypeOf(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".png" => "image/png",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        _ => "application/octet-stream",
+    };
+
     private string? ResolvePath(string? url)
     {
         if (!IsOwnUploadUrl(url)) return null;
@@ -198,26 +267,29 @@ public class StorageService
 
     // ---------- 内部工具 ----------
 
-    private async Task<string> PersistAsync(long userId, byte[] bytes, string ext)
+    private async Task<string> PersistAsync(long userId, byte[] bytes, string ext, bool isPrivate)
     {
         var sub = DateTime.UtcNow.ToString("yyyyMMdd");
-        Directory.CreateDirectory(Path.Combine(Root, sub));
+        var dir = isPrivate ? Path.Combine(Root, PrivateDir, sub) : Path.Combine(Root, sub);
+        Directory.CreateDirectory(dir);
         var name = $"{Guid.NewGuid():N}{ext}";
-        await File.WriteAllBytesAsync(Path.Combine(Root, sub, name), bytes);
-        var url = $"/uploads/{sub}/{name}";
-        await RegisterAsync(userId, url, bytes.Length);
+        await File.WriteAllBytesAsync(Path.Combine(dir, name), bytes);
+
+        // 私有文件对外只有一个"凭签名取"的地址, 不再有可直接 GET 的静态路径
+        var url = isPrivate ? $"/api/files/private/{sub}/{name}" : $"/uploads/{sub}/{name}";
+        await RegisterAsync(userId, url, bytes.Length, isPrivate);
         return url;
     }
 
     /// <summary>登记归属, 供删除授权与后续清理使用。失败不影响上传本身。</summary>
-    private async Task RegisterAsync(long userId, string url, long size)
+    private async Task RegisterAsync(long userId, string url, long size, bool isPrivate = false)
     {
         try
         {
             using var conn = _db.Create();
             await conn.ExecuteAsync(
-                "INSERT IGNORE INTO sys_upload (user_id, url, size_bytes) VALUES (@u, @url, @s)",
-                new { u = userId, url, s = size });
+                "INSERT IGNORE INTO sys_upload (user_id, url, size_bytes, is_private) VALUES (@u, @url, @s, @p)",
+                new { u = userId, url, s = size, p = isPrivate ? 1 : 0 });
         }
         catch { /* 登记失败不阻断上传; 只是该文件后续无法被用户自助删除 */ }
     }

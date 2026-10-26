@@ -7,7 +7,9 @@ namespace AgroMarket.Api.Services;
 public class UserService
 {
     private readonly IDbConnectionFactory _db;
-    public UserService(IDbConnectionFactory db) => _db = db;
+    private readonly StorageService _storage;
+    public UserService(IDbConnectionFactory db, StorageService storage)
+    { _db = db; _storage = storage; }
 
     public async Task<Dtos.AuthResponse> UpdateProfileAsync(long userId, Dtos.UpdateProfileRequest req)
     {
@@ -101,6 +103,10 @@ public class UserService
             ? await conn.QueryFirstOrDefaultAsync<Dtos.MerchantProfileDto>(string.Format(sql, ""), new { u = userId })
             : await conn.QueryFirstOrDefaultAsync<Dtos.MerchantProfileDto>(string.Format(sql, "AND id=@id"), new { u = userId, id });
         if (row == null) return null;
-        return row with { IdNumber = row.IdNumber == null ? null : row.IdNumber.Length < 9 ? "********" : $"{row.IdNumber[..4]}**********{row.IdNumber[^4..]}" };
+        // 证件材料存的是私有路径, 只在出参时换成 10 分钟有效的签名地址; 前端仍直接用作图片地址
+        return row with { LicenseUrl = SignLicense(row.LicenseUrl), IdNumber = row.IdNumber == null ? null : row.IdNumber.Length < 9 ? "********" : $"{row.IdNumber[..4]}**********{row.IdNumber[^4..]}" };
     }
+
+    /// <summary>私有证件地址签名; 非私有地址原样返回。</summary>
+    private string? SignLicense(string? url) => string.IsNullOrEmpty(url) ? url : _storage.SignPrivateUrl(url);
 }

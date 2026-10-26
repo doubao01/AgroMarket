@@ -8,13 +8,14 @@ namespace AgroMarket.Api.Services;
 public class AdminService
 {
     private readonly IDbConnectionFactory _db;
+    private readonly StorageService _storage;
     private readonly RegionService _regions;
     private readonly NotificationPushService _push;
     private readonly Chat.Realtime.ChatConnectionManager _chatConnections;
 
-    public AdminService(IDbConnectionFactory db, RegionService regions, NotificationPushService push,
+    public AdminService(IDbConnectionFactory db, StorageService storage, RegionService regions, NotificationPushService push,
         Chat.Realtime.ChatConnectionManager chatConnections)
-    { _db = db; _regions = regions; _push = push; _chatConnections = chatConnections; }
+    { _db = db; _storage = storage; _regions = regions; _push = push; _chatConnections = chatConnections; }
 
     private static async Task EnsureAdminAsync(IDbConnection conn, long userId)
     {
@@ -92,11 +93,18 @@ public class AdminService
         if (!string.IsNullOrWhiteSpace(status)) { where = "WHERE mp.audit_status=@s"; p.Add("s", status); }
         p.Add("limit", pageSize); p.Add("offset", Paging.Offset(page, pageSize));
         var total = await conn.ExecuteScalarAsync<long>($"SELECT COUNT(*) FROM merchant_profile mp {where}", p);
-        var items = (await conn.QueryAsync<object>(
+        var rows = (await conn.QueryAsync<AuthRow>(
             $@"SELECT mp.id, mp.user_id UserId, u.nickname, u.phone, mp.subject_type SubjectType, mp.subject_name SubjectName,
                       mp.id_number IdNumber, mp.license_url LicenseUrl, mp.audit_status AuditStatus, mp.created_at CreatedAt
                FROM merchant_profile mp JOIN sys_user u ON u.id = mp.user_id {where}
                ORDER BY mp.id DESC LIMIT @limit OFFSET @offset", p)).ToList();
+        // 证件地址是私有文件: 出参换成 10 分钟有效的签名地址, 前端无需改动
+        var items = rows.Select(r => (object)new
+        {
+            r.Id, r.UserId, r.Nickname, r.Phone, r.SubjectType, r.SubjectName, r.IdNumber,
+            LicenseUrl = string.IsNullOrEmpty(r.LicenseUrl) ? r.LicenseUrl : _storage.SignPrivateUrl(r.LicenseUrl),
+            r.AuditStatus, r.CreatedAt,
+        }).ToList();
         await LogAsync(operatorId, "AUDIT", "VIEW_LIST", null,
             $"查看认证材料列表 status={status ?? "-"} 命中={total} (含身份证号与证件地址)", ip);
         return new Dtos.PagedResult<object>(items, total, page, pageSize);
@@ -294,5 +302,21 @@ public class AdminService
                      (SELECT COUNT(*) FROM purchase_demand d WHERE d.town_id=r.id AND d.status='ACTIVE') DemandCount
               FROM sys_region r WHERE r.region_level=4 AND r.parent_id=3 AND r.is_enabled=1 ORDER BY r.sort_order")).ToList();
         return new Dtos.StatsDto(users, activeUsers, supplies, demands, realOrders, realAmount, townStats, demoOrders, demoAmount);
+    }
+
+    /// <summary>认证列表行。用可变类而非 record: id/user_id 是 BIGINT UNSIGNED(ulong),
+    /// Dapper 按构造函数匹配时 ulong->long 不兼容; 属性赋值路径会做类型转换。</summary>
+    private sealed class AuthRow
+    {
+        public long Id { get; set; }
+        public long UserId { get; set; }
+        public string? Nickname { get; set; }
+        public string? Phone { get; set; }
+        public string SubjectType { get; set; } = string.Empty;
+        public string SubjectName { get; set; } = string.Empty;
+        public string? IdNumber { get; set; }
+        public string? LicenseUrl { get; set; }
+        public string AuditStatus { get; set; } = string.Empty;
+        public DateTime CreatedAt { get; set; }
     }
 }

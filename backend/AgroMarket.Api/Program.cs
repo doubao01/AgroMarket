@@ -198,7 +198,9 @@ var uploadRoot = Path.Combine(app.Environment.ContentRootPath, builder.Configura
 Directory.CreateDirectory(uploadRoot);
 app.UseStaticFiles(new StaticFileOptions
 {
-    FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(uploadRoot),
+    // 受控 provider: .tmp(分片会话) 与 .private(证件材料) 一律判不存在,
+    // 否则静态服务会把分片会话的 meta.json 和商家证件按路径直接吐出去。
+    FileProvider = new AgroMarket.Api.Common.UploadsFileProvider(uploadRoot),
     RequestPath = "/uploads",
     ContentTypeProvider = new UploadContentTypeProvider(),
     // 只允许按扩展名映射的类型被返回, 且补 nosniff:

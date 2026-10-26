@@ -159,10 +159,30 @@ public class FileController : ControllerBase
     [HttpPost("upload")]
     [RequireAuth]
     [RequestSizeLimit(12 * 1024 * 1024)]
-    public async Task<ActionResult<ApiResponse<object>>> Upload(IFormFile file)
+    public async Task<ActionResult<ApiResponse<object>>> Upload(IFormFile file, [FromQuery] string? purpose)
     {
-        var url = await _storage.SaveImageAsync(HttpContext.User().Id, file);
-        return Ok(ApiResponse<object>.Ok(new { url }, "上传成功"));
+        // purpose=private 用于商家证件等不该公开的材料: 文件落 .private/, 对外只有签名地址
+        var isPrivate = string.Equals(purpose, "private", StringComparison.OrdinalIgnoreCase);
+        var url = await _storage.SaveImageAsync(HttpContext.User().Id, file, isPrivate);
+        return Ok(ApiResponse<object>.Ok(
+            new { url, viewUrl = isPrivate ? _storage.SignPrivateUrl(url) : url }, "上传成功"));
+    }
+
+    /// <summary>
+    /// 取私有文件(商家证件等)。仅接受带有效签名的地址, 且签名与路径、有效期绑定。
+    /// 不用登录态判断: 小程序与 image 组件无法给图片请求附带 Authorization。
+    /// </summary>
+    [HttpGet("private/{date}/{name}")]
+    public IActionResult GetPrivate(string date, string name, [FromQuery] long? e, [FromQuery] string? s)
+    {
+        var url = $"/api/files/private/{date}/{name}";
+        // 签名无效/过期一律按"不存在"处理, 不区分原因, 避免被用来探测哪些文件存在
+        if (!_storage.VerifyPrivateUrl(url, e?.ToString(), s)) return NotFound();
+        var path = _storage.ResolvePrivatePath(url);
+        if (path == null || !System.IO.File.Exists(path)) return NotFound();
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+        Response.Headers["Cache-Control"] = "private, max-age=300";
+        return PhysicalFile(path, StorageService.ContentTypeOf(path));
     }
 
     /// <summary>删除自己上传的文件(更换头像/撤回资料后清理)。</summary>
