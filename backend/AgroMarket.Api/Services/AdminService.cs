@@ -101,13 +101,30 @@ public class AdminService
         // 证件地址是私有文件: 出参换成 10 分钟有效的签名地址, 前端无需改动
         var items = rows.Select(r => (object)new
         {
-            r.Id, r.UserId, r.Nickname, r.Phone, r.SubjectType, r.SubjectName, r.IdNumber,
+            r.Id, r.UserId, r.Nickname, r.Phone, r.SubjectType, r.SubjectName,
+            // 列表只给脱敏后的号码: 审核看"能否对上人", 需要完整值走单独的查看接口(有审计)
+            IdNumber = Mask.IdNumber(r.IdNumber),
             LicenseUrl = string.IsNullOrEmpty(r.LicenseUrl) ? r.LicenseUrl : _storage.SignPrivateUrl(r.LicenseUrl),
             r.AuditStatus, r.CreatedAt,
         }).ToList();
         await LogAsync(operatorId, "AUDIT", "VIEW_LIST", null,
             $"查看认证材料列表 status={status ?? "-"} 命中={total} (含身份证号与证件地址)", ip);
         return new Dtos.PagedResult<object>(items, total, page, pageSize);
+    }
+
+    /// <summary>
+    /// 查看完整身份证号。列表里是脱敏值, 确需核对时单独取一次并留审计,
+    /// 这样"谁在什么时候看过谁的证件号"是可追溯的。
+    /// </summary>
+    public async Task<string?> GetAuthIdNumberAsync(long operatorId, long authId, string? ip)
+    {
+        using var conn = _db.Create();
+        await EnsureAdminAsync(conn, operatorId);
+        var idNumber = await conn.ExecuteScalarAsync<string?>(
+            "SELECT id_number FROM merchant_profile WHERE id=@id", new { id = authId });
+        if (idNumber == null) throw new BizException("认证记录不存在", ErrorCodes.NotFound);
+        await LogAsync(operatorId, "AUDIT", "VIEW_ID_NUMBER", authId, "查看完整身份证号", ip);
+        return idNumber;
     }
 
     public async Task AuditAuthAsync(long operatorId, long authId, bool approved, string? remark)

@@ -38,6 +38,8 @@ public class ChatConversationRow
     public long PeerId { get; set; }
     public string PeerNickname { get; set; } = string.Empty;
     public string? PeerAvatar { get; set; }
+    public bool PeerContactDisplay { get; set; }
+    public string? PeerContactPhone { get; set; }
     public string? SubjectName { get; set; }
     public string? AuditStatus { get; set; }
     public string? LastContent { get; set; }
@@ -75,6 +77,7 @@ SELECT c.id AS Id, c.source_type AS SourceType, c.source_id AS SourceId,
        me.unread_count AS UnreadCount, me.is_pinned AS IsPinned, me.is_muted AS IsMuted,
        me.remark AS Remark,
        u.id AS PeerId, u.nickname AS PeerNickname, u.avatar_url AS PeerAvatar,
+       u.contact_display AS PeerContactDisplay, u.contact_phone AS PeerContactPhone,
        mp.subject_name AS SubjectName, mp.audit_status AS AuditStatus,
        (SELECT CASE WHEN m.status='RECALLED' THEN '[已撤回]' ELSE m.content END
           FROM chat_message m WHERE m.id = c.last_message_id) AS LastContent,
@@ -96,6 +99,7 @@ SELECT c.id AS Id, c.source_type AS SourceType, c.source_id AS SourceId,
        me.unread_count AS UnreadCount, me.is_pinned AS IsPinned, me.is_muted AS IsMuted,
        me.remark AS Remark,
        u.id AS PeerId, u.nickname AS PeerNickname, u.avatar_url AS PeerAvatar,
+       u.contact_display AS PeerContactDisplay, u.contact_phone AS PeerContactPhone,
        mp.subject_name AS SubjectName, mp.audit_status AS AuditStatus,
        (SELECT CASE WHEN m.status='RECALLED' THEN '[已撤回]' ELSE m.content END
           FROM chat_message m WHERE m.id = c.last_message_id) AS LastContent,
@@ -552,6 +556,8 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
             Id = r.PeerId,
             Nickname = r.PeerNickname,
             AvatarUrl = r.PeerAvatar,
+            // 开关关闭或号码为空都不返回, 前端据此决定是否显示"拨打"入口
+            ContactPhone = r.PeerContactDisplay ? r.PeerContactPhone : null,
             Verified = r.AuditStatus == "APPROVED",
             SubjectName = r.SubjectName,
         },

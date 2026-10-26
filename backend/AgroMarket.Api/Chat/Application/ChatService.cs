@@ -15,12 +15,14 @@ public class ChatService
 {
     private readonly ChatRepository _repo;
     private readonly IRealtimeNotifier _realtime;
+    private readonly StripedLock _sendLock;
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
 
-    public ChatService(ChatRepository repo, IRealtimeNotifier realtime)
+    public ChatService(ChatRepository repo, IRealtimeNotifier realtime, StripedLock sendLock)
     {
         _repo = repo;
         _realtime = realtime;
+        _sendLock = sendLock;
     }
 
     public async Task<ChatConversationDto> CreateOrGetAsync(long userId, ConversationCreateRequest req)
@@ -106,14 +108,19 @@ public class ChatService
             ? req.Payload.Value.GetRawText()
             : null;
 
-        var (row, isNew) = await _repo.SendMessageAsync(
-            convId, userId, req.ClientMsgId, req.MessageType, content, payload, req.BizType, req.BizId, req.ReplyToMessageId);
+        // 落库与广播必须在同一把会话锁内完成, 否则并发发送会出现"先推 id 大的、后推 id 小的"。
+        // 锁只覆盖这一段(校验都在锁外), 对正常发送延迟的影响可以忽略。
+        using (await _sendLock.LockAsync(convId))
+        {
+            var (row, isNew) = await _repo.SendMessageAsync(
+                convId, userId, req.ClientMsgId, req.MessageType, content, payload, req.BizType, req.BizId, req.ReplyToMessageId);
 
-        var dto = MapMessage(row);
-        // 幂等重发(clientMsgId 命中唯一键)时不再广播, 否则对方未读会被重复累加。
-        if (isNew)
-            await _realtime.NotifyMessageAsync(convId, dto, userId);
-        return dto;
+            var dto = MapMessage(row);
+            // 幂等重发(clientMsgId 命中唯一键)时不再广播, 否则对方未读会被重复累加。
+            if (isNew)
+                await _realtime.NotifyMessageAsync(convId, dto, userId);
+            return dto;
+        }
     }
 
     public async Task<ChatMessagePageDto> ListMessagesAsync(long userId, long convId, long? beforeId, int limit)

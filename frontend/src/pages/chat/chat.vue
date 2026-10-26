@@ -101,6 +101,12 @@
       <text class="reply-cancel" @tap="replyTo = null">×</text>
     </view>
 
+    <!-- 对方在资料里开启"对外展示联系方式"时后端才会返回 contactPhone, 关闭则为空 -->
+    <view v-if="peer.contactPhone" class="contact-bar">
+      <text class="contact-text">对方电话 {{ peer.contactPhone }}</text>
+      <text class="contact-call" @tap="callPeer">拨打</text>
+    </view>
+
     <view class="input-bar">
       <button class="btn-icon" @tap="openPlus">＋</button>
       <input
@@ -196,6 +202,11 @@ export default {
     refreshUnread()
   },
   methods: {
+    callPeer() {
+      const phone = this.peer && this.peer.contactPhone
+      if (phone) uni.makePhoneCall({ phoneNumber: phone })
+    },
+
     socketOpen() {
       const s = getSocket()
       return !!(s && s.isOpen())
@@ -814,6 +825,10 @@ export default {
 
 <style>
 .chat-page { display: flex; flex-direction: column; height: 100vh; padding-bottom: 0; }
+.contact-bar { display: flex; align-items: center; justify-content: space-between;
+  padding: 14rpx 24rpx; background: #f2f8f4; border-top: 1rpx solid #e3ece6; }
+.contact-text { font-size: 26rpx; color: #4a5b51; }
+.contact-call { font-size: 26rpx; color: #2e8b57; font-weight: 600; }
 .msg-scroll { flex: 1; padding: 24rpx; }
 .load-more { text-align: center; font-size: 24rpx; color: #2e8b57; padding: 16rpx 0; }
 .time-divider { text-align: center; font-size: 22rpx; color: #a7b3ac; margin: 16rpx 0 24rpx; }

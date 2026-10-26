@@ -36,6 +36,11 @@ public class AdminController : ControllerBase
         [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
         => Ok(ApiResponse<PagedResult<object>>.Ok(await _admin.QueryAuthsAsync(Uid, status, page, pageSize, HttpContext.ClientIp())));
 
+    /// <summary>查看完整身份证号(列表只给脱敏值)。会写审计日志。</summary>
+    [HttpGet("auths/{id:long}/id-number")]
+    public async Task<ActionResult<ApiResponse<object>>> AuthIdNumber(long id)
+        => Ok(ApiResponse<object>.Ok(new { idNumber = await _admin.GetAuthIdNumberAsync(Uid, id, HttpContext.ClientIp()) }));
+
     [HttpPost("auths/{id}/audit/{approve}")]
     public async Task<ActionResult<ApiResponse<object>>> AuditAuth(long id, bool approve, [FromBody] RemarkRequest? req)
     {

@@ -104,7 +104,7 @@ public class UserService
             : await conn.QueryFirstOrDefaultAsync<Dtos.MerchantProfileDto>(string.Format(sql, "AND id=@id"), new { u = userId, id });
         if (row == null) return null;
         // 证件材料存的是私有路径, 只在出参时换成 10 分钟有效的签名地址; 前端仍直接用作图片地址
-        return row with { LicenseUrl = SignLicense(row.LicenseUrl), IdNumber = row.IdNumber == null ? null : row.IdNumber.Length < 9 ? "********" : $"{row.IdNumber[..4]}**********{row.IdNumber[^4..]}" };
+        return row with { LicenseUrl = SignLicense(row.LicenseUrl), IdNumber = Mask.IdNumber(row.IdNumber) };
     }
 
     /// <summary>私有证件地址签名; 非私有地址原样返回。</summary>

@@ -57,6 +57,12 @@ public class ChatPeerDto
     public string? AvatarUrl { get; set; }
     public bool Verified { get; set; }
     public string? SubjectName { get; set; }
+
+    /// <summary>
+    /// 对端联系电话。仅当对方在资料里开启"对外展示联系方式"且填了号码时才返回,
+    /// 否则为 null —— 这是 sys_user.contact_display 的唯一读点。
+    /// </summary>
+    public string? ContactPhone { get; set; }
 }
 
 /// <summary>会话摘要(会话列表项)。</summary>
