@@ -170,12 +170,13 @@ public class SupplyService
         using var conn = _db.Create();
         var row = await conn.QueryFirstOrDefaultAsync<SupplyRow>(string.Format(SelectSql, " AND s.id=@id", "s.id"), new { id, limit = 1, offset = 0 });
         if (row == null) throw new BizException("供应信息不存在", ErrorCodes.NotFound);
-        var isAdmin = viewerId != null && await conn.ExecuteScalarAsync<bool>("SELECT role='ADMIN' AND status='ACTIVE' FROM sys_user WHERE id=@id", new { id = viewerId });
-        if (row.Status != "ACTIVE" && viewerId != row.PublisherId && !isAdmin)
+        // 与采购详情同一口径(本人或管理员); 原先这里漏了管理员, 两边规则不一致
+        var phoneVisible = await PhoneAccessPolicy.CanSeeAsync(conn, viewerId, row.PublisherId);
+        if (row.Status != "ACTIVE" && !phoneVisible)
             throw new BizException("供应信息不存在", ErrorCodes.NotFound);
         var list = await AttachImagesAsync(conn, new List<SupplyRow> { row });
         var dto = list[0];
-        if (viewerId != null && viewerId == row.PublisherId)
+        if (phoneVisible)
             return dto with { ContactPhone = row.ContactPhone };
         return dto;
     }

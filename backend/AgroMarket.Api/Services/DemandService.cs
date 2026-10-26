@@ -159,8 +159,8 @@ public class DemandService
         using var conn = _db.Create();
         var r = await conn.QueryFirstOrDefaultAsync<DemandRow>(string.Format(SelectSql, " AND d.id=@id", "d.id"), new { id, limit = 1, offset = 0 });
         if (r == null) throw new BizException("采购需求不存在", ErrorCodes.NotFound);
-        var isAdmin = viewerId != null && await conn.ExecuteScalarAsync<bool>("SELECT role='ADMIN' FROM sys_user WHERE id=@id", new { id = viewerId });
-        var phoneVisible = viewerId != null && (viewerId == r.PublisherId || isAdmin);
+        // 可见性口径统一由 PhoneAccessPolicy 决定, 不在各 Service 里各写一遍
+        var phoneVisible = await PhoneAccessPolicy.CanSeeAsync(conn, viewerId, r.PublisherId);
         if (r.Status != "ACTIVE" && !phoneVisible)
             throw new BizException("采购需求不存在", ErrorCodes.NotFound);
         var dto = (await AttachAsync(conn, new List<DemandRow> { r }))[0];
