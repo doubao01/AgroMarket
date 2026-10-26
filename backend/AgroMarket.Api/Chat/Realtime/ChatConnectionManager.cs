@@ -39,17 +39,27 @@ public class ChatConnectionManager
 {
     private readonly ConcurrentDictionary<long, ConcurrentDictionary<Guid, ChatConnection>> _byUser = new();
 
+    // Add 与 Remove 必须互斥: Remove 里"集合空了就摘掉用户"这一步, 若与 Add 交错,
+    // 会把刚加进来的新连接连同用户条目一起摘掉 —— 该连接不再收到任何推送,
+    // 但 socket 还活着, 客户端以为自己在线, 表现为"偶发收不到消息"。
+    private readonly object _gate = new();
+
     public ChatConnection Add(long userId, WebSocket socket)
     {
         var conn = new ChatConnection(Guid.NewGuid(), userId, socket);
-        _byUser.GetOrAdd(userId, _ => new ConcurrentDictionary<Guid, ChatConnection>()).TryAdd(conn.Id, conn);
+        lock (_gate)
+        {
+            var set = _byUser.GetOrAdd(userId, _ => new ConcurrentDictionary<Guid, ChatConnection>());
+            set.TryAdd(conn.Id, conn);
+        }
         return conn;
     }
 
     public void Remove(ChatConnection conn)
     {
-        if (_byUser.TryGetValue(conn.UserId, out var set))
+        lock (_gate)
         {
+            if (!_byUser.TryGetValue(conn.UserId, out var set)) return;
             set.TryRemove(conn.Id, out _);
             if (set.IsEmpty) _byUser.TryRemove(conn.UserId, out _);
         }
@@ -67,7 +77,11 @@ public class ChatConnectionManager
     /// </summary>
     public async Task KickUserAsync(long userId, string reason)
     {
-        if (!_byUser.TryRemove(userId, out var set)) return;
+        ConcurrentDictionary<Guid, ChatConnection>? set;
+        lock (_gate)
+        {
+            if (!_byUser.TryRemove(userId, out set)) return;
+        }
         foreach (var conn in set.Values)
         {
             try

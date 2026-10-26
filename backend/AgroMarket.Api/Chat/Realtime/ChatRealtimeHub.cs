@@ -90,16 +90,18 @@ public static class ChatRealtimeHub
                     }
                 }
 
-                string? text;
-                bool idle;
-                (text, idle) = await ReceiveTextOrIdleAsync(socket, buffer, ctx.RequestAborted, RecheckInterval);
-                if (text is null)
+                var (outcome, text) = await ReceiveTextOrIdleAsync(socket, buffer, ctx.RequestAborted, RecheckInterval);
+                if (outcome == ReceiveOutcome.Idle) continue;   // 这段时间没收到帧, 回顶部复核状态
+                if (outcome == ReceiveOutcome.TooLarge)
                 {
-                    if (idle) continue;   // 只是这段时间没收到帧, 回顶部复核状态
-                    break;                // 对端关闭或帧超长
+                    await conn.SendAsync(JsonSerializer.Serialize(
+                        new { type = "error", code = 413, msg = "消息过长, 单帧上限 64KB" }, Json));
+                    await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "frame too large", CancellationToken.None);
+                    break;
                 }
+                if (outcome == ReceiveOutcome.Closed) break;
 
-                await DispatchAsync(conn, chat, logger, text);
+                await DispatchAsync(conn, chat, logger, text!);   // Ok 分支的 Text 一定非空
             }
         }
         catch (OperationCanceledException) { }
@@ -127,7 +129,13 @@ public static class ChatRealtimeHub
             using var doc = JsonDocument.Parse(text);
             root = doc.RootElement.Clone();
         }
-        catch (JsonException) { return; }
+        catch (JsonException)
+        {
+            // 畸形帧不能静默忽略: 客户端会以为消息进了链路, 服务端日志里也查不到是谁发的
+            await conn.SendAsync(JsonSerializer.Serialize(
+                new { type = "error", code = 400, msg = "帧格式错误, 需要 JSON 对象" }, Json));
+            return;
+        }
 
         var type = GetString(root, "type");
         switch (type)
@@ -194,12 +202,18 @@ public static class ChatRealtimeHub
         }
     }
 
+    /// <summary>上报类帧(read/delivered/typing)的统一错误回执, 带 op 便于客户端区分。</summary>
+    private static Task SendOpErrorAsync(ChatConnection conn, string op, BizException ex, long convId)
+        => conn.SendAsync(JsonSerializer.Serialize(
+            new { type = "error", op, code = ex.Code, msg = ex.Message, conversationId = convId }, Json));
+
     private static async Task HandleReadAsync(ChatConnection conn, ChatService chat, JsonElement root)
     {
         if (!TryGetLong(root, "conversationId", out var convId)) return;
         TryGetLong(root, "lastReadMessageId", out var lastRead);
+        // 与 send/recall 一致回执: 静默吞掉时客户端仍显示"已读", 双方状态不一致且无从排查
         try { await chat.MarkReadAsync(conn.UserId, convId, lastRead); }
-        catch (BizException) { /* 忽略越权/不存在 */ }
+        catch (BizException ex) { await SendOpErrorAsync(conn, "read", ex, convId); }
     }
 
     private static async Task HandleDeliveredAsync(ChatConnection conn, ChatService chat, JsonElement root)
@@ -207,7 +221,7 @@ public static class ChatRealtimeHub
         if (!TryGetLong(root, "conversationId", out var convId)) return;
         TryGetLong(root, "lastDeliveredMessageId", out var lastDelivered);
         try { await chat.MarkDeliveredAsync(conn.UserId, convId, lastDelivered); }
-        catch (BizException) { /* 忽略越权/不存在 */ }
+        catch (BizException ex) { await SendOpErrorAsync(conn, "delivered", ex, convId); }
     }
 
     private static async Task HandleTypingAsync(ChatConnection conn, ChatService chat, JsonElement root)
@@ -215,7 +229,7 @@ public static class ChatRealtimeHub
         if (!TryGetLong(root, "conversationId", out var convId)) return;
         var typing = !root.TryGetProperty("typing", out var t) || t.ValueKind != JsonValueKind.False;
         try { await chat.TypingAsync(conn.UserId, convId, typing); }
-        catch (BizException) { /* 忽略越权/不存在 */ }
+        catch (BizException ex) { await SendOpErrorAsync(conn, "typing", ex, convId); }
     }
 
     private static async Task HandleRecallAsync(ChatConnection conn, ChatService chat, JsonElement root)
@@ -273,7 +287,7 @@ public static class ChatRealtimeHub
         catch { return null; }
     }
 
-    /// <summary>读取一条完整文本消息 (处理分片)。连接关闭返回 null。</summary>
+    /// <summary>账号是否仍可接收消息(被冻结后应停止推送)。</summary>
     private static async Task<bool> IsUserActiveAsync(IDbConnectionFactory db, long userId)
     {
         using var conn = db.Create();
@@ -292,33 +306,39 @@ public static class ChatRealtimeHub
     /// 等待一帧文本。区分三种结果: 收到帧 / 对端关闭或帧超长(都应结束连接) / 空闲超时(应复核状态后继续等)。
     /// 空闲超时不能与"关闭"混为一谈, 否则要么静默客户端永远不被复核, 要么会被误断开。
     /// </summary>
-    private static async Task<(string? Text, bool Idle)> ReceiveTextOrIdleAsync(
+    private enum ReceiveOutcome { Ok, Idle, TooLarge, Closed }
+
+    private static async Task<(ReceiveOutcome Outcome, string? Text)> ReceiveTextOrIdleAsync(
         WebSocket socket, byte[] buffer, CancellationToken ct, TimeSpan idle)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
         linked.CancelAfter(idle);
         try
         {
-            return (await ReceiveTextAsync(socket, buffer, linked.Token), false);
+            var (text, tooLarge) = await ReceiveTextAsync(socket, buffer, linked.Token);
+            if (tooLarge) return (ReceiveOutcome.TooLarge, null);
+            return text == null ? (ReceiveOutcome.Closed, null) : (ReceiveOutcome.Ok, text);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return (null, true);
+            return (ReceiveOutcome.Idle, null);
         }
     }
 
-    private static async Task<string?> ReceiveTextAsync(WebSocket socket, byte[] buffer, CancellationToken ct)
+    private static async Task<(string? Text, bool TooLarge)> ReceiveTextAsync(WebSocket socket, byte[] buffer, CancellationToken ct)
     {
         using var ms = new MemoryStream();
         while (true)
         {
             var result = await socket.ReceiveAsync(buffer, ct);
-            if (result.MessageType == WebSocketMessageType.Close) return null;
-            if (ms.Length + result.Count > MaxFrameBytes) return null; // 返回 null 让调用方关闭连接
+            if (result.MessageType == WebSocketMessageType.Close) return (null, false);
+            // 超长必须与"对端关闭"区分开: 否则客户端收到的是 1000/bye, 会当成正常结束重连,
+            // 消息被静默丢弃且没有任何错误提示, 排查时只能翻服务端日志。
+            if (ms.Length + result.Count > MaxFrameBytes) return (null, true);
             ms.Write(buffer, 0, result.Count);
             if (result.EndOfMessage) break;
         }
-        return Encoding.UTF8.GetString(ms.ToArray());
+        return (Encoding.UTF8.GetString(ms.ToArray()), false);
     }
 
     private static string? GetString(JsonElement e, string name)

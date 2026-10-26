@@ -506,11 +506,30 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
     public async Task<int> RecallAsync(long messageId, long senderId, int windowMinutes)
     {
         using var conn = _db.Create();
-        return await conn.ExecuteAsync(
+        var affected = await conn.ExecuteAsync(
             @"UPDATE chat_message SET status='RECALLED', recalled_at=NOW(3)
               WHERE id=@id AND sender_id=@s AND status='SENT'
                 AND created_at > DATE_SUB(NOW(3), INTERVAL @w MINUTE)",
             new { id = messageId, s = senderId, w = windowMinutes });
+
+        // 撤回必须同步回退未读数: unread_count 是增量维护的裸计数(发送时 +1),
+        // 只改消息状态会让接收端红点比真实未读多, 且用户不进会话就永远不会修正。
+        // 这里按"未读且未撤回"重算一次, 与 MarkReadAsync 用的是同一套口径。
+        if (affected > 0)
+        {
+            await conn.ExecuteAsync(
+                @"UPDATE chat_participant p
+                  JOIN chat_message m0 ON m0.id = @id
+                  SET p.unread_count = (SELECT COUNT(*) FROM chat_message m
+                                        WHERE m.conversation_id = p.conversation_id
+                                          AND m.id > COALESCE(p.last_read_message_id, 0)
+                                          AND m.sender_id <> p.user_id
+                                          AND m.status <> 'RECALLED')
+                  WHERE p.conversation_id = m0.conversation_id AND p.user_id <> @s",
+                new { id = messageId, s = senderId });
+        }
+
+        return affected;
     }
 
     // ---------------- 映射 ----------------

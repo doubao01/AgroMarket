@@ -126,7 +126,9 @@ public class AlertService
     /// <summary>执行一轮扫描。dayRules=false 时跳过日级规则(成交额波动/联动滞后)。通知频次由抑制窗口控制: 同一对象每窗口至多通知一次。</summary>
     public async Task<ScanSummary> ScanAsync(bool dayRules = true)
     {
-        var conn = _db.Create();
+        // 必须是 using: 下面的 Busy 分支会提前 return。显式 Open 过的连接若不在所有路径归还,
+        // 每触发一次 Busy 就永久占掉一个池槽位(默认上限 100), 反复触发会把连接池耗尽。
+        using var conn = _db.Create();
 
         // 跨进程互斥: 后台定时器与管理员手动扫描会同时跑同一轮, 造成重复通知与重复落库。
         //
@@ -136,16 +138,8 @@ public class AlertService
         // 池化连接, GET_LOCK 会返回 0(自己已持锁), 扫描被永久判成 busy;
         // 若拿到别的会话, 则会重复加锁。显式 Open 后 Dapper 不再关闭它, 语义才对。
         conn.Open();
-        try
-        {
-            var locked = await conn.ExecuteScalarAsync<int?>("SELECT GET_LOCK('agromarket_alert_scan', 0)") == 1;
-            if (!locked) return new ScanSummary { Busy = true };
-        }
-        catch
-        {
-            conn.Dispose();
-            throw;
-        }
+        var locked = await conn.ExecuteScalarAsync<int?>("SELECT GET_LOCK('agromarket_alert_scan', 0)") == 1;
+        if (!locked) return new ScanSummary { Busy = true };
 
         var rules = (await GetRulesAsync()).Where(r => r.Enabled).ToDictionary(r => r.Code, r => r);
         var summary = new ScanSummary();
