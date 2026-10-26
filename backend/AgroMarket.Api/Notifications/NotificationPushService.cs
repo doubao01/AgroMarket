@@ -36,7 +36,9 @@ public class NotificationPushService
         {
             _logger.LogWarning(ex, "notify insert failed receiver={Receiver}", receiverId);
         }
-        PushWs(receiverId, messageId, msgType, title, bizId);
+        // 落库失败(messageId=0)时不能推: 客户端会收到一条点进去查不到的"幽灵提醒",
+        // 而站内消息实际上根本不存在。这类失败只记日志, 由调用方的重试逻辑补偿。
+        if (messageId > 0) PushWs(receiverId, messageId, msgType, title, bizId);
         wxTemplateKey ??= TemplateKeyOf(msgType);
         if (wxTemplateKey != null && messageId > 0)
         {

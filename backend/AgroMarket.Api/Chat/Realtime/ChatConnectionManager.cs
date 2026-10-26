@@ -7,10 +7,21 @@ namespace AgroMarket.Api.Chat.Realtime;
 /// <summary>单条 WebSocket 连接 (同一用户可有多条)。发送带锁, 避免并发写帧。</summary>
 public class ChatConnection
 {
+    // 写超时: 对端"连上但不读"(挂起的 App、被暂停的标签页)时, 内核发送缓冲迟早耗尽,
+    // 此时 SendAsync 会无限挂起, 而调用它的是发消息的 HTTP 请求 —— 等于一个僵尸连接
+    // 就能把发送方的请求线程一直占住。超时后直接 Abort, 让读循环抛错走 finally 摘除连接。
+    private static readonly TimeSpan WriteTimeout = TimeSpan.FromSeconds(5);
+    // 单连接待写字节上限: 超过说明对端已经不读了, 继续排队只是堆积内存。
+    private const long MaxPendingBytes = 512 * 1024;
+
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private long _pendingBytes;
     public Guid Id { get; }
     public long UserId { get; }
     public WebSocket Socket { get; }
+
+    /// <summary>曾因积压而丢帧。客户端重连后应主动按 lastMessageId 补拉。</summary>
+    public bool DroppedFrames { get; private set; }
 
     public ChatConnection(Guid id, long userId, WebSocket socket)
     {
@@ -19,18 +30,39 @@ public class ChatConnection
 
     public bool IsOpen => Socket.State == WebSocketState.Open;
 
-    public async Task SendAsync(string json)
+    /// <summary>发送一帧。返回 false 表示这一帧没送到(连接已断/超时/积压丢弃)。</summary>
+    public async Task<bool> SendAsync(string json)
     {
-        if (!IsOpen) return;
+        if (!IsOpen) return false;
         var bytes = Encoding.UTF8.GetBytes(json);
+
+        if (Interlocked.Add(ref _pendingBytes, bytes.Length) > MaxPendingBytes)
+        {
+            Interlocked.Add(ref _pendingBytes, -bytes.Length);
+            DroppedFrames = true;
+            return false;
+        }
+
         await _lock.WaitAsync();
         try
         {
-            if (IsOpen)
-                await Socket.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
+            if (!IsOpen) return false;
+            using var cts = new CancellationTokenSource(WriteTimeout);
+            await Socket.SendAsync(bytes, WebSocketMessageType.Text, true, cts.Token);
+            return true;
         }
-        catch { /* 连接已断开, 忽略 */ }
-        finally { _lock.Release(); }
+        catch
+        {
+            // 超时或写失败都说明这条连接已经不可用: 主动 Abort,
+            // 让收帧循环抛 WebSocketException 并走 finally 从注册表摘除。
+            try { Socket.Abort(); } catch { }
+            return false;
+        }
+        finally
+        {
+            Interlocked.Add(ref _pendingBytes, -bytes.Length);
+            _lock.Release();
+        }
     }
 }
 
