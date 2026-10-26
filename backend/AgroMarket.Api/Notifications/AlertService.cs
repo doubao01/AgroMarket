@@ -181,7 +181,6 @@ public class AlertService
         {
             try { await conn.ExecuteScalarAsync<int?>("SELECT RELEASE_LOCK('agromarket_alert_scan')"); }
             catch { /* 连接已断时锁会随会话释放 */ }
-            conn.Dispose();
         }
     }
 
@@ -194,17 +193,27 @@ public class AlertService
     /// </summary>
     private async Task<(bool recorded, bool suppressed)> RecordAndNotifyAsync(System.Data.IDbConnection conn, AlertRule rule, ScanHit hit)
     {
-        var existing = await conn.QueryFirstOrDefaultAsync<(long Id, DateTime CreatedAt, DateTime? ResolvedAt)>(
-            "SELECT id, created_at CreatedAt, resolved_at ResolvedAt FROM alert_record WHERE rule_code=@r AND object_type=@t AND object_id=@o",
+        var existing = await conn.QueryFirstOrDefaultAsync<(long Id, DateTime CreatedAt, DateTime? ResolvedAt, DateTime? NotifiedAt)>(
+            "SELECT id, created_at CreatedAt, resolved_at ResolvedAt, notified_at NotifiedAt FROM alert_record WHERE rule_code=@r AND object_type=@t AND object_id=@o",
             new { r = rule.Code, t = hit.ObjectType, o = hit.ObjectId });
         if (existing.Id == 0)
         {
             await conn.ExecuteAsync(
                 "INSERT INTO alert_record (rule_code, object_type, object_id, status, detail) VALUES (@r, @t, @o, 'OPEN', @d)",
                 new { r = rule.Code, t = hit.ObjectType, o = hit.ObjectId, d = hit.Detail });
-            await NotifyReceiversAsync(conn, rule, hit);
+            await TryNotifyAsync(conn, rule, hit, inserted: true, objectId: hit.ObjectId, ruleCode: rule.Code);
             return (true, false);
         }
+        // 记录存在不等于"通知过": 上一轮可能落库成功但通知失败, 这条告警一个人都没看到。
+        // 因此未成功投递的记录必须重试, 不能被抑制窗口挡住(否则窗口内永久静默)。
+        if (existing.NotifiedAt == null)
+        {
+            await conn.ExecuteAsync("UPDATE alert_record SET hit_count=hit_count+1, detail=@d WHERE id=@id",
+                new { d = hit.Detail, id = existing.Id });
+            await TryNotifyAsync(conn, rule, hit, inserted: false, objectId: hit.ObjectId, ruleCode: rule.Code, recordId: existing.Id);
+            return (true, false);
+        }
+
         var windowEnd = existing.ResolvedAt ?? existing.CreatedAt.AddHours(rule.SuppressHours);
         if (existing.ResolvedAt != null || DateTime.Now >= windowEnd)
         {
@@ -212,7 +221,7 @@ public class AlertService
             await conn.ExecuteAsync(
                 "UPDATE alert_record SET status='OPEN', detail=@d, hit_count=hit_count+1, created_at=NOW(3), resolved_at=NULL WHERE id=@id",
                 new { d = hit.Detail, id = existing.Id });
-            await NotifyReceiversAsync(conn, rule, hit);
+            await TryNotifyAsync(conn, rule, hit, inserted: false, objectId: hit.ObjectId, ruleCode: rule.Code);
             return (true, false);
         }
         await conn.ExecuteAsync("UPDATE alert_record SET hit_count=hit_count+1 WHERE id=@id", new { id = existing.Id });
@@ -239,11 +248,41 @@ public class AlertService
         }
     }
 
-    private async Task NotifyReceiversAsync(System.Data.IDbConnection conn, AlertRule rule, ScanHit hit)
+    /// <summary>
+    /// 发送通知并在成功时回写 notified_at。
+    /// 失败不上抛: 让本轮扫描继续处理其余对象; 失败时 notified_at 保持 NULL, 下一轮会重试。
+    /// </summary>
+    private async Task<bool> TryNotifyAsync(System.Data.IDbConnection conn, AlertRule rule, ScanHit hit,
+        bool inserted, long objectId, string ruleCode, long? recordId = null)
     {
-        var receivers = await ResolveReceiversAsync(conn, rule.RecipientScope, rule.Code, hit);
-        foreach (var uid in receivers)
-            await _push.NotifyAsync(uid, "ALERT", TitleOf(rule.Code), hit.Detail, hit.ObjectId);
+        try
+        {
+            var receivers = await ResolveReceiversAsync(conn, rule.RecipientScope, rule.Code, hit);
+            var allDelivered = receivers.Count > 0;
+            foreach (var uid in receivers)
+            {
+                var mid = await _push.NotifyAsync(uid, "ALERT", TitleOf(rule.Code), hit.Detail, hit.ObjectId);
+                if (mid <= 0) allDelivered = false;
+            }
+            if (!allDelivered)
+            {
+                _logger.LogWarning("alert notify incomplete rule={Rule} object={Object} receivers={Count}",
+                    ruleCode, objectId, receivers.Count);
+                return false;
+            }
+
+            // 投递成功才标记, 这是下一轮"要不要重试"的唯一依据
+            await conn.ExecuteAsync(
+                "UPDATE alert_record SET notified_at=NOW(3) WHERE rule_code=@r AND object_type=@t AND object_id=@o",
+                new { r = ruleCode, t = hit.ObjectType, o = objectId });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // 不能上抛: 单条通知失败不应中断整轮扫描, 更不能让其余对象被跳过
+            _logger.LogWarning(ex, "alert notify failed rule={Rule} object={Object}", ruleCode, objectId);
+            return false;
+        }
     }
 
     private async Task<List<long>> ResolveReceiversAsync(System.Data.IDbConnection conn, string scope, string ruleCode, ScanHit hit)

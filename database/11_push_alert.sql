@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS alert_record (
   hit_count   INT NOT NULL DEFAULT 1,
   detail      VARCHAR(500) NULL,
   resolved_at DATETIME(3) NULL,
+  notified_at DATETIME(3) NULL COMMENT '首次成功投递时间; NULL 表示尚未投递成功, 下轮扫描会重试',
   created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   -- 只按 (rule_code, object_id) 去重会让"供应#5"与"采购#5"互相抑制, 必须带类型维度
