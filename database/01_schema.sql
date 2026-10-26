@@ -424,7 +424,7 @@ CREATE TABLE IF NOT EXISTS sys_operation_log (
 CREATE TABLE IF NOT EXISTS sys_sms_code (
   id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   phone      VARCHAR(20) NOT NULL,
-  code       VARCHAR(10) NOT NULL,
+  code       VARCHAR(64) NOT NULL COMMENT '验证码 HMAC-SHA256 摘要(不存明文)',
   purpose    VARCHAR(20) NOT NULL DEFAULT 'LOGIN',
   is_used    TINYINT(1) NOT NULL DEFAULT 0,
   expired_at DATETIME(3) NOT NULL,

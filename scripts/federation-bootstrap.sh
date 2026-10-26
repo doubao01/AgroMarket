@@ -22,7 +22,9 @@ set -eu
 
 : "${FED_ALL:?FED_ALL 必填，格式 nodeCode|baseUrl|level|name[|regionCode] 以 ; 分隔}"
 PHONE="${FED_ADMIN_PHONE:-13800000001}"
-PASSWORD="${FED_ADMIN_PASSWORD:-Abc123456}"
+# 不设默认口令: 默认口令一旦被写进脚本, 就会跟着脚本一起被复制到每个节点
+: "${FED_ADMIN_PASSWORD:?FED_ADMIN_PASSWORD 必填, 请提供强口令}"
+PASSWORD="$FED_ADMIN_PASSWORD"
 SYNC="${FED_SYNC_ON_BOOTSTRAP:-true}"
 RETRIES="${FED_WAIT_RETRIES:-60}"
 

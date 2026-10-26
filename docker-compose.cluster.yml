@@ -211,7 +211,8 @@ services:
       # 格式: nodeCode|baseUrl(网内)|level|name|regionCode，用 ; 分隔；baseUrl 必须是对端可达的地址
       FED_ALL: "node-henan|http://api-henan:8080|PROVINCE|河南省农贸通|410000;node-zhoukou|http://api-zhoukou:8080|CITY|周口市农贸通|411600;node-xixian|http://api-xixian:8080|COUNTY|息县农贸通|411528;node-huaiyang|http://api-huaiyang:8080|COUNTY|淮阳县农贸通|411626"
       FED_ADMIN_PHONE: "13800000001"
-      FED_ADMIN_PASSWORD: "Abc123456"
+      # 无默认值: 未设置时 compose 直接报错, 避免把已知口令带进集群
+      FED_ADMIN_PASSWORD: ${FED_ADMIN_PASSWORD:?FED_ADMIN_PASSWORD 未设置, 请用强口令导出该环境变量}
       FED_SYNC_ON_BOOTSTRAP: "true"
     volumes:
       - ./scripts/federation-bootstrap.sh:/bootstrap.sh:ro

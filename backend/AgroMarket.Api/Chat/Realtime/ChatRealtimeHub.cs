@@ -66,14 +66,13 @@ public static class ChatRealtimeHub
             await conn.SendAsync(JsonSerializer.Serialize(new { type = "connected", userId }, Json));
 
             var buffer = new byte[8 * 1024];
-            var nextStatusCheck = DateTime.UtcNow.AddMinutes(2);
+            // 最长等 60 秒就回循环顶部复核一次凭据与账号状态。
+            // 原实现把校验放在收到帧之后: 从不发帧的"静默客户端"(挂着页面不发心跳、
+            // 或干脆是脚本长期挂着)永远不进校验分支, 管理员冻结账号或 token 过期后
+            // 这条连接仍会无限期收到消息推送 —— 封号不生效。
+            var nextStatusCheck = DateTime.UtcNow.Add(RecheckInterval);
             while (socket.State == WebSocketState.Open && !ctx.RequestAborted.IsCancellationRequested)
             {
-                var text = await ReceiveTextAsync(socket, buffer, ctx.RequestAborted);
-                if (text is null) break;
-
-                // 握手只校验一次, 长连接可以跨过 token 过期与管理员的冻结操作:
-                // 每帧先做零成本的本地过期判断, 账号状态最多每 2 分钟回查一次(客户端有心跳帧)
                 if (DateTime.UtcNow >= tokenExpiresAt)
                 {
                     await conn.SendAsync(JsonSerializer.Serialize(
@@ -83,12 +82,21 @@ public static class ChatRealtimeHub
                 }
                 if (DateTime.UtcNow >= nextStatusCheck)
                 {
-                    nextStatusCheck = DateTime.UtcNow.AddMinutes(2);
+                    nextStatusCheck = DateTime.UtcNow.Add(RecheckInterval);
                     if (!await IsUserActiveAsync(db, userId))
                     {
                         await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "account inactive", CancellationToken.None);
                         break;
                     }
+                }
+
+                string? text;
+                bool idle;
+                (text, idle) = await ReceiveTextOrIdleAsync(socket, buffer, ctx.RequestAborted, RecheckInterval);
+                if (text is null)
+                {
+                    if (idle) continue;   // 只是这段时间没收到帧, 回顶部复核状态
+                    break;                // 对端关闭或帧超长
                 }
 
                 await DispatchAsync(conn, chat, logger, text);
@@ -276,6 +284,28 @@ public static class ChatRealtimeHub
 
     /// <summary>单帧上限: 聊天消息正文 ≤2000 字符, 64KB 足够; 超限直接断开, 防止单连接把进程内存打满。</summary>
     private const int MaxFrameBytes = 64 * 1024;
+
+    /// <summary>静默连接的最长复核间隔: 这段时间内没有收到任何帧也会回到主循环复核凭据与账号状态。</summary>
+    private static readonly TimeSpan RecheckInterval = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// 等待一帧文本。区分三种结果: 收到帧 / 对端关闭或帧超长(都应结束连接) / 空闲超时(应复核状态后继续等)。
+    /// 空闲超时不能与"关闭"混为一谈, 否则要么静默客户端永远不被复核, 要么会被误断开。
+    /// </summary>
+    private static async Task<(string? Text, bool Idle)> ReceiveTextOrIdleAsync(
+        WebSocket socket, byte[] buffer, CancellationToken ct, TimeSpan idle)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linked.CancelAfter(idle);
+        try
+        {
+            return (await ReceiveTextAsync(socket, buffer, linked.Token), false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return (null, true);
+        }
+    }
 
     private static async Task<string?> ReceiveTextAsync(WebSocket socket, byte[] buffer, CancellationToken ct)
     {

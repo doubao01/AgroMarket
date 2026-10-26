@@ -21,12 +21,12 @@ public class AdminController : ControllerBase
     public async Task<ActionResult<ApiResponse<PagedResult<object>>>> Users(
         [FromQuery] string? keyword, [FromQuery] string? role, [FromQuery] string? status,
         [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
-        => Ok(ApiResponse<PagedResult<object>>.Ok(await _admin.QueryUsersAsync(Uid, keyword, role, status, page, pageSize)));
+        => Ok(ApiResponse<PagedResult<object>>.Ok(await _admin.QueryUsersAsync(Uid, keyword, role, status, page, pageSize, HttpContext.ClientIp())));
 
     [HttpPost("users/{id}/freeze/{freeze}")]
     public async Task<ActionResult<ApiResponse<object>>> Freeze(long id, bool freeze)
     {
-        await _admin.FreezeUserAsync(Uid, id, freeze);
+        await _admin.FreezeUserAsync(Uid, id, freeze, HttpContext.ClientIp());
         return Ok(ApiResponse<object>.Ok(null, freeze ? "已冻结" : "已解冻"));
     }
 
@@ -34,7 +34,7 @@ public class AdminController : ControllerBase
     [HttpGet("auths")]
     public async Task<ActionResult<ApiResponse<PagedResult<object>>>> Auths(
         [FromQuery] string? status, [FromQuery] int page = 1, [FromQuery] int pageSize = 10)
-        => Ok(ApiResponse<PagedResult<object>>.Ok(await _admin.QueryAuthsAsync(Uid, status, page, pageSize)));
+        => Ok(ApiResponse<PagedResult<object>>.Ok(await _admin.QueryAuthsAsync(Uid, status, page, pageSize, HttpContext.ClientIp())));
 
     [HttpPost("auths/{id}/audit/{approve}")]
     public async Task<ActionResult<ApiResponse<object>>> AuditAuth(long id, bool approve, [FromBody] RemarkRequest? req)

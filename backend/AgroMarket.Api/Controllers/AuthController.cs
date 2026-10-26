@@ -15,7 +15,7 @@ public class AuthController : ControllerBase
     [HttpPost("sms/send")]
     public async Task<ActionResult<ApiResponse<object>>> SendSms([FromBody] SendSmsRequest req)
     {
-        await _auth.SendSmsCodeAsync(req.Phone);
+        await _auth.SendSmsCodeAsync(req.Phone, HttpContext.ClientIp());
         return Ok(ApiResponse<object>.Ok(null, "验证码已发送 (开发模式请查看后端日志)"));
     }
 

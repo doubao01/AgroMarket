@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AgroMarket.Api.Ai.Domain;
+using AgroMarket.Api.Federation.Application;
 using AgroMarket.Api.Common;
 using Microsoft.Extensions.Options;
 
@@ -14,9 +15,11 @@ public class OpenAiCompatClient : ILlmClient
 {
     private readonly HttpClient _http;
     private readonly AiOptions _options;
+    private readonly ILogger<OpenAiCompatClient> _logger;
 
-    public OpenAiCompatClient(HttpClient http, IOptions<AiOptions> options)
+    public OpenAiCompatClient(HttpClient http, IOptions<AiOptions> options, ILogger<OpenAiCompatClient> logger)
     {
+        _logger = logger;
         _http = http;
         _options = options.Value;
         if (!string.IsNullOrWhiteSpace(_options.BaseUrl))
@@ -70,8 +73,12 @@ public class OpenAiCompatClient : ILlmClient
 
         if (!resp.IsSuccessStatusCode)
         {
+            // 上游错误体原样回显给用户会把第三方网关的内部细节(模型名、额度、请求 id、
+            // 有时还有回显的入参)暴露到客户端; 入参含用户原文, 等于把刚脱敏的内容又漏回去。
+            // 详细内容只进服务端日志。
             var body = await resp.Content.ReadAsStringAsync(ct);
-            throw new BizException($"AI 服务调用失败({(int)resp.StatusCode}): {Truncate(body, 200)}", ErrorCodes.ServerError);
+            _logger.LogWarning("AI 上游返回 {Status}: {Body}", (int)resp.StatusCode, Truncate(SecretScrubbingConsoleFormatter.Scrub(body), 500));
+            throw new BizException($"AI 服务调用失败({(int)resp.StatusCode})", ErrorCodes.ServerError);
         }
 
         var parsed = await resp.Content.ReadFromJsonAsync<ChatCompletionResponse>(cancellationToken: ct)
@@ -223,6 +230,13 @@ public class OpenAiCompatClient : ILlmClient
         }
     }
 
+    /// <summary>
+    /// 出站到第三方大模型的最后一道闸门。
+    /// 平台按最小必要把用户自由文本(需求描述、投诉正文、聊天摘要)交出去, 但手机号、身份证、
+    /// 邮箱属于可识别信息, 一旦离开本节点就收不回来, 也无法确认中转网关的留存策略 ——
+    /// 所以在唯一的出口处统一脱敏, 而不是依赖每个调用方自觉(工具返回值同样要过, 否则
+    /// "搜索供应"这类工具会把发布者联系方式原样带出去)。
+    /// </summary>
     private static object ToRequestMessage(ChatMessage m)
     {
         var role = m.Role.ToString().ToLowerInvariant();
@@ -231,12 +245,12 @@ public class OpenAiCompatClient : ILlmClient
             return new Dictionary<string, object?>
             {
                 ["role"] = role,
-                ["content"] = string.IsNullOrEmpty(m.Content) ? null : m.Content,
+                ["content"] = Mask(m.Content),
                 ["tool_calls"] = m.ToolCalls.Select(tc => new
                 {
                     id = tc.Id,
                     type = "function",
-                    function = new { name = tc.Name, arguments = tc.ArgumentsJson },
+                    function = new { name = tc.Name, arguments = MaskJsonText(tc.ArgumentsJson) },
                 }).ToArray(),
             };
         }
@@ -245,12 +259,29 @@ public class OpenAiCompatClient : ILlmClient
             return new Dictionary<string, object?>
             {
                 ["role"] = role,
-                ["content"] = m.Content,
+                ["content"] = Mask(m.Content),
                 ["tool_call_id"] = m.ToolCallId,
                 ["name"] = m.Name,
             };
         }
-        return new Dictionary<string, object?> { ["role"] = role, ["content"] = m.Content };
+        return new Dictionary<string, object?> { ["role"] = role, ["content"] = Mask(m.Content) };
+    }
+
+    private static string? Mask(string? text) => PiiMasker.Mask(text);
+
+    /// <summary>工具参数是 JSON 文本, 按 JSON 结构递归脱敏; 解析不了就按纯文本处理。</summary>
+    private static string? MaskJsonText(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return json;
+        try
+        {
+            var masked = PiiMasker.MaskData(JsonDocument.Parse(json).RootElement);
+            return masked.GetRawText();
+        }
+        catch (JsonException)
+        {
+            return PiiMasker.Mask(json);
+        }
     }
 
     private static JsonElement ParseSchema(string json)

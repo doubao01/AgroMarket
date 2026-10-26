@@ -59,4 +59,23 @@ public class ChatConnectionManager
         => _byUser.TryGetValue(userId, out var set) ? set.Values.ToList() : Array.Empty<ChatConnection>();
 
     public bool IsOnline(long userId) => _byUser.TryGetValue(userId, out var s) && !s.IsEmpty;
+
+    /// <summary>
+    /// 立即踢下线: 先整体摘除注册表(此后任何推送都投递不到该用户), 再关闭底层 socket。
+    /// 用于冻结账号等需要"立刻生效"的场景 —— 只摘注册表也能止住推送, 但连接会挂到读循环
+    /// 下一次回查状态才关闭, 客户端以为自己还在线。
+    /// </summary>
+    public async Task KickUserAsync(long userId, string reason)
+    {
+        if (!_byUser.TryRemove(userId, out var set)) return;
+        foreach (var conn in set.Values)
+        {
+            try
+            {
+                if (conn.Socket.State == WebSocketState.Open)
+                    await conn.Socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, reason, CancellationToken.None);
+            }
+            catch { /* 已经断开或正在断开 */ }
+        }
+    }
 }

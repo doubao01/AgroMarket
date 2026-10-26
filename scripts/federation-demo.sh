@@ -19,7 +19,10 @@ DB_A="agro_market_demo_a"; PORT_A=8090; CODE_A="node-xixian";   NAME_A="息县�
 DB_B="agro_market_demo_b"; PORT_B=8091; CODE_B="node-huaiyang"; NAME_B="淮阳县农贸通"; LEVEL_B="COUNTY"; REGION_B="411626"
 
 SHARED_KEY="demo-federation-shared-key-at-least-32-bytes-000"
-ADMIN_PHONE="13800000001"; ADMIN_PASSWORD="Abc123456"
+ADMIN_PHONE="${FED_ADMIN_PHONE:-13800000001}"
+# 演示脚本同样不写死口令: 它会被复制到节点上执行, 默认口令等于把管理员凭据一起散步出去
+: "${FED_ADMIN_PASSWORD:?FED_ADMIN_PASSWORD 必填, 请提供强口令}"
+ADMIN_PASSWORD="$FED_ADMIN_PASSWORD"
 APP_USER="agromarket"; APP_PASS="CHANGE_ME_DB_PASSWORD"
 LOG_A="/tmp/fed-demo-a.log"; LOG_B="/tmp/fed-demo-b.log"
 PID_A="/tmp/fed-demo-a.pid"; PID_B="/tmp/fed-demo-b.pid"

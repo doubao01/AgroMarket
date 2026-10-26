@@ -42,9 +42,6 @@
         {{ submitting ? '请稍候...' : (mode === 'login' ? '登录' : '注册并登录') }}
       </button>
 
-      <view v-if="mode === 'login'" class="muted mt16" style="text-align:center;">
-        测试账号：13800000001 / Abc123456（管理员）
-      </view>
       <view v-if="mode === 'register'" class="muted mt16" style="text-align:center;">
         开发环境短信验证码会打印在后端日志中
       </view>

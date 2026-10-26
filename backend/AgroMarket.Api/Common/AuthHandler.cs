@@ -79,6 +79,12 @@ public static class HttpContextExtensions
 {
     public static CurrentUser User(this HttpContext ctx) =>
         ctx.Items["CurrentUser"] as CurrentUser ?? new CurrentUser();
+    /// <summary>
+    /// 取调用方 IP 用于审计留痕。Program.cs 已启用 UseForwardedHeaders(XForwardedFor),
+    /// 因此 RemoteIpAddress 在代理后也是真实客户端地址; 不要手工解析 X-Forwarded-For,
+    /// 那会让调用方可以伪造头来嫁祸他人。
+    /// </summary>
+    public static string? ClientIp(this HttpContext ctx) => ctx.Connection.RemoteIpAddress?.ToString();
 }
 
 public class TokenAuthHandler : AuthenticationHandler<TokenAuthOptions>

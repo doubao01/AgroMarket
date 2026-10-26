@@ -50,15 +50,31 @@ public class AuthService
               FROM sys_user WHERE id=@id", new { id });
     }
 
-    public async Task SendSmsCodeAsync(string phone)
+    public async Task SendSmsCodeAsync(string phone, string? ip = null)
     {
         if (!System.Text.RegularExpressions.Regex.IsMatch(phone, @"^1[3-9]\d{9}$"))
             throw new BizException("手机号格式不正确");
-        var code = Random.Shared.Next(100000, 999999).ToString();
+
         using var conn = _db.Create();
+
+        // 发短信要真花钱, 且是"按号码打击他人"的现成工具: 不限频就能被脚本用来轰炸任意手机号,
+        // 顺带把短信费用打上去。60 秒内只允许一条, 1 小时内最多 5 条。
+        var recent = await conn.ExecuteScalarAsync<int>(
+            @"SELECT COUNT(*) FROM sys_sms_code
+              WHERE phone=@p AND created_at > DATE_SUB(NOW(3), INTERVAL 60 SECOND)", new { p = phone });
+        if (recent > 0)
+            throw new BizException("验证码发送过于频繁, 请 60 秒后再试", ErrorCodes.TooManyRequests);
+        var hourly = await conn.ExecuteScalarAsync<int>(
+            @"SELECT COUNT(*) FROM sys_sms_code
+              WHERE phone=@p AND created_at > DATE_SUB(NOW(3), INTERVAL 1 HOUR)", new { p = phone });
+        if (hourly >= 5)
+            throw new BizException("该手机号今日验证码次数过多, 请 1 小时后再试", ErrorCodes.TooManyRequests);
+
+        var code = Random.Shared.Next(100000, 999999).ToString();
+        var digest = SmsCodeDigest(code);
         await conn.ExecuteAsync(
             @"INSERT INTO sys_sms_code (phone, code, purpose, expired_at) VALUES (@p, @c, 'LOGIN', DATE_ADD(NOW(3), INTERVAL 10 MINUTE))",
-            new { p = phone, c = code });
+            new { p = phone, c = digest });
         // 渠道可插拔: 开发用 Dev 打印, 生产用阿里云短信, 未配置则明确失败。
         // 早期实现是"生产直接抛 ServerError 占位", 等于注册与短信登录在生产 100% 不可用。
         var sent = await _sms.SendAsync(phone, code);
@@ -67,9 +83,10 @@ public class AuthService
             // 发送失败就把这条验证码作废, 避免留下"用户没收到但可用"的记录
             await conn.ExecuteAsync(
                 "UPDATE sys_sms_code SET is_used=1 WHERE phone=@p AND code=@c AND is_used=0",
-                new { p = phone, c = code });
+                new { p = phone, c = digest });
             throw new BizException(sent.Error ?? "短信发送失败", ErrorCodes.ServerError);
         }
+        _logger.LogInformation("短信验证码已发送 phone={Phone} ip={Ip}", MaskPhone(phone), ip ?? "-");
     }
 
     public async Task VerifySmsCodeAsync(string phone, string code)
@@ -79,10 +96,30 @@ public class AuthService
             @"SELECT id, code FROM sys_sms_code
               WHERE phone=@p AND purpose='LOGIN' AND is_used=0 AND expired_at > NOW(3)
               ORDER BY id DESC LIMIT 1", new { p = phone });
-        if (row.Id == 0 || row.Code != code)
+        if (row.Id == 0 || !DigestEquals(row.Code, SmsCodeDigest(code)))
             throw new BizException("验证码错误或已过期");
         await conn.ExecuteAsync("UPDATE sys_sms_code SET is_used=1 WHERE id=@id", new { row.Id });
     }
+
+    /// <summary>
+    /// 验证码摘要: 用服务端密钥做 HMAC 而不是裸哈希。
+    /// 6 位数字只有 100 万种可能, 裸 SHA-256 在一台笔记本上是秒级穷举, 拖库即可还原;
+    /// 加密钥后 dump 出的摘要离开 Jwt:SecretKey 无法离线破解。
+    /// </summary>
+    private string SmsCodeDigest(string code)
+    {
+        var key = System.Text.Encoding.UTF8.GetBytes(_cfg["Jwt:SecretKey"] ?? "agromarket-sms-code-digest");
+        using var h = new System.Security.Cryptography.HMACSHA256(key);
+        return Convert.ToHexString(h.ComputeHash(System.Text.Encoding.UTF8.GetBytes($"sms:{code}")));
+    }
+
+    /// <summary>定长时间比较, 避免按字节提前返回泄漏摘要前缀。</summary>
+    private static bool DigestEquals(string a, string b) =>
+        System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.ASCII.GetBytes(a), System.Text.Encoding.ASCII.GetBytes(b));
+
+    private static string MaskPhone(string phone) =>
+        phone.Length == 11 ? phone[..3] + "****" + phone[^4..] : "***";
 
     public async Task<Dtos.AuthResponse> LoginByCodeAsync(string phone, string code)
     {

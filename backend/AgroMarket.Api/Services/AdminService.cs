@@ -10,9 +10,11 @@ public class AdminService
     private readonly IDbConnectionFactory _db;
     private readonly RegionService _regions;
     private readonly NotificationPushService _push;
+    private readonly Chat.Realtime.ChatConnectionManager _chatConnections;
 
-    public AdminService(IDbConnectionFactory db, RegionService regions, NotificationPushService push)
-    { _db = db; _regions = regions; _push = push; }
+    public AdminService(IDbConnectionFactory db, RegionService regions, NotificationPushService push,
+        Chat.Realtime.ChatConnectionManager chatConnections)
+    { _db = db; _regions = regions; _push = push; _chatConnections = chatConnections; }
 
     private static async Task EnsureAdminAsync(IDbConnection conn, long userId)
     {
@@ -33,7 +35,12 @@ public class AdminService
     }
 
     // ---------- 用户管理 ----------
-    public async Task<Dtos.PagedResult<object>> QueryUsersAsync(long operatorId, string? keyword, string? role, string? status, int page, int pageSize)
+    /// <summary>
+    /// 后台查询用户列表 —— 返回体含全部手机号。
+    /// 这类"只读但能看到一批个人信息"的操作用户无感、事后难查, 必须留痕:
+    /// 农户手机号一旦被内部人员导出, 没有审计就只能靠猜。关键词本身也可能是手机号, 一并记录。
+    /// </summary>
+    public async Task<Dtos.PagedResult<object>> QueryUsersAsync(long operatorId, string? keyword, string? role, string? status, int page, int pageSize, string? ip = null)
     {
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
@@ -50,21 +57,31 @@ public class AdminService
         var items = (await conn.QueryAsync<object>(
             $@"SELECT id, phone, nickname, role, status, home_region_id HomeRegionId, created_at CreatedAt, last_login_at LastLoginAt
                FROM sys_user {where} ORDER BY id DESC LIMIT @limit OFFSET @offset", p)).ToList();
+        await LogAsync(operatorId, "USER", "VIEW_LIST", null,
+            $"查看用户列表 kw={keyword ?? "-"} role={role ?? "-"} status={status ?? "-"} 命中={total}", ip);
         return new Dtos.PagedResult<object>(items, total, page, pageSize);
     }
 
-    public async Task FreezeUserAsync(long operatorId, long userId, bool freeze)
+    public async Task FreezeUserAsync(long operatorId, long userId, bool freeze, string? ip = null)
     {
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
         var affected = await conn.ExecuteAsync("UPDATE sys_user SET status=@s WHERE id=@id AND role != 'ADMIN'",
             new { s = freeze ? "FROZEN" : "ACTIVE", id = userId });
         if (affected == 0) throw new BizException("用户不存在或不可操作", ErrorCodes.NotFound);
-        await LogAsync(operatorId, "USER", freeze ? "FREEZE" : "UNFREEZE", userId, null, null);
+        await LogAsync(operatorId, "USER", freeze ? "FREEZE" : "UNFREEZE", userId, null, ip);
+
+        // 冻结必须立刻断掉聊天长连接: 主循环最多 60 秒才回查一次状态, 这期间被冻结的账号
+        // 仍会持续收到消息推送, 管理员会以为封号没生效。
+        if (freeze)
+            await _chatConnections.KickUserAsync(userId, "account frozen");
     }
 
     // ---------- 认证审核 ----------
-    public async Task<Dtos.PagedResult<object>> QueryAuthsAsync(long operatorId, string? status, int page, int pageSize)
+    /// <summary>
+    /// 后台查询认证材料 —— 返回体含身份证号、执照/证件原图地址, 是敏感度最高的一处读取, 必须留痕。
+    /// </summary>
+    public async Task<Dtos.PagedResult<object>> QueryAuthsAsync(long operatorId, string? status, int page, int pageSize, string? ip = null)
     {
         using var conn = _db.Create();
         await EnsureAdminAsync(conn, operatorId);
@@ -80,6 +97,8 @@ public class AdminService
                       mp.id_number IdNumber, mp.license_url LicenseUrl, mp.audit_status AuditStatus, mp.created_at CreatedAt
                FROM merchant_profile mp JOIN sys_user u ON u.id = mp.user_id {where}
                ORDER BY mp.id DESC LIMIT @limit OFFSET @offset", p)).ToList();
+        await LogAsync(operatorId, "AUDIT", "VIEW_LIST", null,
+            $"查看认证材料列表 status={status ?? "-"} 命中={total} (含身份证号与证件地址)", ip);
         return new Dtos.PagedResult<object>(items, total, page, pageSize);
     }
 
