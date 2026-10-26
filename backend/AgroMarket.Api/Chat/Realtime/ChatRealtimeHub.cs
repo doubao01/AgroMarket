@@ -225,14 +225,18 @@ public static class ChatRealtimeHub
 
     private static (long UserId, DateTime ExpiresAtUtc)? ResolveUserId(HttpContext ctx, IConfiguration cfg)
     {
-        var token = ctx.Request.Query["token"].FirstOrDefault();
+        // 头优先于 query: 新客户端把 token 放在 Authorization 里, query 只作为旧客户端兜底。
+        // query 传 token 会被 ASP.NET 的 Request starting/finished 按 Information 级别整条打进
+        // 日志(含 query 串), 7 天有效的 JWT 与其中的手机号 claim 会落到日志系统与代理访问日志。
+        var token = ctx.Request.Headers["X-Token"].ToString();
         if (string.IsNullOrEmpty(token))
         {
             var auth = ctx.Request.Headers.Authorization.ToString();
             if (auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
                 token = auth["Bearer ".Length..].Trim();
         }
-        if (string.IsNullOrEmpty(token)) token = ctx.Request.Headers["X-Token"].ToString();
+        if (string.IsNullOrEmpty(token))
+            token = ctx.Request.Query["token"].FirstOrDefault();
         if (string.IsNullOrEmpty(token)) return null;
 
         try

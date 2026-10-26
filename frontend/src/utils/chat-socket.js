@@ -50,9 +50,12 @@ export function createChatSocket(handlers = {}) {
   }
 
   function connect() {
-    if (closed) return
     task = uni.connectSocket({
-      url: `${wsBase()}/ws/chat?token=${encodeURIComponent(token)}`,
+      url: `${wsBase()}/ws/chat`,
+      // token 走请求头而不是 query: ASP.NET 的 Request starting/finished 会把完整
+      // 请求行(含 query)按 Information 级别打进日志, 7 天有效的 JWT 会连手机号 claim
+      // 一起落到日志系统与反向代理访问日志里。
+      header: { Authorization: `Bearer ${token}` },
       complete: () => {},
     })
     task.onOpen(() => {

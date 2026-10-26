@@ -59,7 +59,7 @@ public class FederationService
                 ExternalId = Truncate(r.ExternalId, 80)!,
                 RegionCode = Truncate(r.RegionCode, 20),
                 OccurredAt = r.OccurredAt == default ? DateTime.Now : r.OccurredAt,
-                Data = r.Data,
+                Data = PiiMasker.MaskData(r.Data),
             })
             .ToList();
 
@@ -71,7 +71,7 @@ public class FederationService
 
         var reportId = await _repo.UpsertReportAsync(sourceNodeCode, batchNo,
             string.IsNullOrWhiteSpace(periodDate) ? DateTime.Today.ToString("yyyy-MM-dd") : periodDate,
-            cleanMetrics.Count, cleanRecords.Count, rawPayloadJson);
+            cleanMetrics.Count, cleanRecords.Count, PiiMasker.MaskJson(rawPayloadJson));
 
         var forwardedSources = cleanMetrics.Select(m => m.SourceNodeCode!)
             .Concat(cleanRecords.Select(r => r.SourceNodeCode!))
@@ -287,7 +287,8 @@ public class FederationService
         ExternalId = r.ExternalId,
         RegionCode = r.RegionCode,
         OccurredAt = r.OccurredAt,
-        Data = ParseData(r.Data),
+        // 转发前再脱敏一次: 库里可能存着本次修复之前入站的明文行, 不能假设对方已经脱敏
+        Data = PiiMasker.MaskData(ParseData(r.Data)),
     };
 
     private static JsonElement ParseData(string? json)

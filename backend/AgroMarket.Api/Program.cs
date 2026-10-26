@@ -92,6 +92,13 @@ builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiRateLimiter>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiChatService>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiAssistService>();
 builder.Services.AddScoped<AgroMarket.Api.Ai.Application.AiInsightService>();
+// 日志凭据兜底: ASP.NET 默认的 Console 输出走这里, 统一把 token/password 等打码
+builder.Logging.AddConsoleFormatter<AgroMarket.Api.Common.SecretScrubbingConsoleFormatter, Microsoft.Extensions.Logging.Console.ConsoleFormatterOptions>();
+builder.Logging.AddConsole(o => o.FormatterName = AgroMarket.Api.Common.SecretScrubbingConsoleFormatter.FormatterName);
+// 请求行日志含完整 URL(含 query), 是 token 进日志的主通道; 降到 Warning 后不再逐请求打印。
+// 需要排查请求时临时把该类别调回 Information 即可。
+builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
+
 
 // 节点联动 (多节点数据上报 / 同步): 未配置 SharedKey 时节点接口返回 401/400, 不影响业务
 builder.Services.Configure<FederationOptions>(builder.Configuration.GetSection(FederationOptions.SectionName));
