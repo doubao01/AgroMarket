@@ -128,6 +128,9 @@ builder.Services.AddHostedService<AgroMarket.Api.Notifications.AlertScanWorker>(
 builder.Services.AddSingleton<AgroMarket.Api.Notifications.OrderTimeoutWorker>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AgroMarket.Api.Notifications.OrderTimeoutWorker>());
 
+// 数据留存清理: 默认关闭(Retention:Enabled=false), 期限由业务/合规决定, 不由代码替业务拍板
+builder.Services.AddHostedService<AgroMarket.Api.Notifications.RetentionWorker>();
+
 // Authentication (custom lightweight JWT handler)
 builder.Services.AddAuthentication("Token")
     .AddScheme<TokenAuthOptions, TokenAuthHandler>("Token", o =>

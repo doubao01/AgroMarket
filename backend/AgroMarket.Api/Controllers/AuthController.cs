@@ -52,6 +52,18 @@ public class UserController : ControllerBase
     private readonly AuthService _auth;
     public UserController(UserService users, AuthService auth) { _users = users; _auth = auth; }
 
+    /// <summary>
+    /// 注销账号(匿名化)。会同时作废该用户所有 token。
+    /// 不可逆: 手机号被改写, 重新使用需重新注册。
+    /// </summary>
+    [HttpPost("deactivate")]
+    [RequireAuth]
+    public async Task<ActionResult<ApiResponse<object>>> Deactivate()
+    {
+        await _users.DeactivateAsync(HttpContext.User().Id, "USER_SELF");
+        return Ok(ApiResponse<object>.Ok(null, "账号已注销"));
+    }
+
     [HttpGet("me")]
     [RequireAuth]
     public async Task<ActionResult<ApiResponse<AuthResponse>>> Me()

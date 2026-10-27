@@ -510,8 +510,9 @@ ORDER BY c.last_message_at DESC, c.id DESC LIMIT @limit";
     public async Task<int> RecallAsync(long messageId, long senderId, int windowMinutes)
     {
         using var conn = _db.Create();
+        // 撤回要真的把内容抹掉, 不能只改状态: 否则"撤回"只对界面生效, 正文仍可读
         var affected = await conn.ExecuteAsync(
-            @"UPDATE chat_message SET status='RECALLED', recalled_at=NOW(3)
+            @"UPDATE chat_message SET status='RECALLED', recalled_at=NOW(3), content=NULL, payload=NULL
               WHERE id=@id AND sender_id=@s AND status='SENT'
                 AND created_at > DATE_SUB(NOW(3), INTERVAL @w MINUTE)",
             new { id = messageId, s = senderId, w = windowMinutes });

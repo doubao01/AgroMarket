@@ -51,6 +51,48 @@ public class UserService
         return new Dtos.AuthResponse(u.Id, u.Phone, u.Nickname, u.Role, "", u.HomeRegionId, u.ContactDisplay, u.ContactPhone, u.AvatarUrl);
     }
 
+    /// <summary>
+    /// 注销账号。做匿名化而不是物理删除:
+    ///  - 订单/报价是交易凭证, 删掉会让对方的账目断裂, 所以保留行;
+    ///  - 但个人标识(手机号/昵称/头像/联系方式/微信 openid)必须抹掉,
+    ///    否则"已注销"只是换个状态, 个人信息仍然躺在库里 —— 那不叫删除;
+    ///  - 手机号改写为 del_&lt;id&gt;, 既腾出原号码给本人重新注册, 也不留旧号;
+    ///  - 本人发出的聊天正文一并清空(对方会话里的位置保留, 但内容不再可读)。
+    /// </summary>
+    public async Task DeactivateAsync(long userId, string? reason)
+    {
+        using var conn = _db.Create();
+        conn.Open();
+        using var tx = conn.BeginTransaction();
+        var exists = await conn.ExecuteScalarAsync<int>(
+            "SELECT COUNT(*) FROM sys_user WHERE id=@id AND deleted_at IS NULL", new { id = userId }, tx);
+        if (exists == 0) throw new BizException("账号不存在或已注销", ErrorCodes.NotFound);
+
+        await conn.ExecuteAsync(@"
+            UPDATE sys_user SET
+                phone = CONCAT('del_', id),
+                password_hash = NULL,
+                nickname = '已注销用户',
+                avatar_url = NULL,
+                contact_phone = NULL,
+                contact_display = 0,
+                wx_openid = NULL,
+                home_region_id = NULL,
+                status = 'DELETED',
+                deleted_at = NOW(3),
+                deleted_reason = @reason,
+                token_version = token_version + 1
+            WHERE id=@id", new { id = userId, reason = reason ?? "USER_SELF" }, tx);
+
+        // 本人发出的消息正文清空: 聊天内容是个人信息, 注销后不该继续可读
+        await conn.ExecuteAsync(
+            "UPDATE chat_message SET content='[该用户已注销]', payload=NULL WHERE sender_id=@id AND content IS NOT NULL",
+            new { id = userId }, tx);
+        // 站内通知同样删除(既包括发给他的, 也包括他发出的系统通知)
+        await conn.ExecuteAsync("DELETE FROM user_message WHERE receiver_id=@id OR sender_id=@id", new { id = userId }, tx);
+        tx.Commit();
+    }
+
     public async Task ChangePasswordAsync(long userId, string oldPwd, string newPwd)
     {
         if (newPwd.Length < 6) throw new BizException("新密码至少 6 位");
