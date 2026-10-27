@@ -70,6 +70,7 @@ builder.Services.AddScoped<AgroMarket.Api.Chat.Application.ChatTradeService>();
 builder.Services.AddSingleton<AgroMarket.Api.Chat.Realtime.ChatConnectionManager>();
 builder.Services.AddSingleton<AgroMarket.Api.Common.StripedLock>();
 builder.Services.AddSingleton<AnonymousReadThrottle>();
+builder.Services.AddSingleton<SmsThrottle>();
 builder.Services.AddScoped<AgroMarket.Api.Chat.Realtime.IRealtimeNotifier, AgroMarket.Api.Chat.Realtime.ChatRealtimeNotifier>();
 // 支付渠道(可插拔): 真实渠道未配置时不可用, 不伪造支付
 builder.Services.AddSingleton<IPaymentProvider, MockPaymentProvider>();

@@ -27,8 +27,10 @@ public class DevSmsSender : ISmsSender
 
     public Task<SmsSendResult> SendAsync(string phone, string code, CancellationToken ct = default)
     {
-        _logger.LogInformation("[DEV-SMS] 验证码已生成 phone={Phone} code={Code}", phone, code);
-        Console.WriteLine($"[DEV-SMS] {phone} 的登录验证码: {code}");
+        // 手机号脱敏后再打日志: 开发日志常常被贴进 issue/群聊, 完整号码没必要出现
+        var masked = phone.Length >= 7 ? phone[..3] + "****" + phone[^4..] : "****";
+        _logger.LogInformation("[DEV-SMS] 验证码已生成 phone={Phone} code={Code}", masked, code);
+        Console.WriteLine($"[DEV-SMS] {masked} 的登录验证码: {code}");
         return Task.FromResult(new SmsSendResult(true));
     }
 }

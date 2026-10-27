@@ -11,11 +11,12 @@ public class AuthService
     private readonly ILogger<AuthService> _logger;
     private readonly LoginThrottle _throttle;
     private readonly Sms.ISmsSender _sms;
+    private readonly SmsThrottle _smsThrottle;
 
     public AuthService(IDbConnectionFactory db, IConfiguration cfg, ILogger<AuthService> logger,
-        LoginThrottle throttle, Sms.ISmsSender sms)
+        LoginThrottle throttle, Sms.ISmsSender sms, SmsThrottle smsThrottle)
     {
-        _db = db; _cfg = cfg; _logger = logger; _throttle = throttle; _sms = sms;
+        _db = db; _cfg = cfg; _logger = logger; _throttle = throttle; _sms = sms; _smsThrottle = smsThrottle;
     }
 
     public class UserRow
@@ -58,6 +59,9 @@ public class AuthService
 
         using var conn = _db.Create();
 
+        // 按 IP 的总量限制: 同一手机号的分钟/小时限制挡不住"换号继续打"
+        _smsThrottle.AcquireSendSlot(ip);
+
         // 发短信要真花钱, 且是"按号码打击他人"的现成工具: 不限频就能被脚本用来轰炸任意手机号,
         // 顺带把短信费用打上去。60 秒内只允许一条, 1 小时内最多 5 条。
         var recent = await conn.ExecuteScalarAsync<int>(
@@ -92,13 +96,21 @@ public class AuthService
 
     public async Task VerifySmsCodeAsync(string phone, string code)
     {
+        // 6 位数字只有 100 万种可能, 而验证码有 10 分钟有效期:
+        // 不限次数的话脚本能在有效期内跑完相当比例的枚举空间, 猜中即等于拿到登录凭据。
+        _smsThrottle.EnsureCanVerify(phone);
+
         using var conn = _db.Create();
         var row = await conn.QueryFirstOrDefaultAsync<(long Id, string Code)>(
             @"SELECT id, code FROM sys_sms_code
               WHERE phone=@p AND purpose='LOGIN' AND is_used=0 AND expired_at > NOW(3)
               ORDER BY id DESC LIMIT 1", new { p = phone });
         if (row.Id == 0 || !DigestEquals(row.Code, SmsCodeDigest(code)))
+        {
+            _smsThrottle.OnVerifyFailed(phone);
             throw new BizException("验证码错误或已过期");
+        }
+        _smsThrottle.OnVerifySucceeded(phone);
         await conn.ExecuteAsync("UPDATE sys_sms_code SET is_used=1 WHERE id=@id", new { row.Id });
     }
 
