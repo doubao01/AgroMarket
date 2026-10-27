@@ -50,7 +50,7 @@
 </template>
 
 <script>
-import { supplyApi, demandApi, userApi } from '../../api/index'
+import { authApi, supplyApi, demandApi, userApi } from '../../api/index'
 import { getUser, clearAuth, ensureLogin, getToken } from '../../utils/request'
 import { teardownChat } from '../../utils/chat-store'
 
@@ -81,8 +81,13 @@ export default {
     go(url) { uni.navigateTo({ url }) },
     logout() {
       uni.showModal({ title: '退出登录', content: '确定退出当前账号？', success: (r) => {
-        if (r.confirm) { clearAuth(); teardownChat(); this.me = null; uni.showToast({ title: '已退出' }) }
+        if (r.confirm) { this.doLogout() }
       } })
+    },
+    // 先作废服务端 token 再清本地: 网络失败也照常退出, 不能让"退不出去"卡住用户
+    async doLogout() {
+      try { await authApi.logout() } catch (e) {}
+      clearAuth(); teardownChat(); this.me = null; uni.showToast({ title: '已退出' })
     },
     maskPhone(p) { return p ? p.slice(0, 3) + '****' + p.slice(7) : '' },
     roleText(r) { return { ADMIN: '平台管理员', FARMER: '农户', COOP: '合作社', BUYER: '采购商', ENTERPRISE: '企业', MERCHANT: '商户' }[r] || r },

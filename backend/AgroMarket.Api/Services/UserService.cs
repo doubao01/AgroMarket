@@ -60,6 +60,8 @@ public class UserService
             throw new BizException("原密码错误", ErrorCodes.Unauthorized);
         await conn.ExecuteAsync("UPDATE sys_user SET password_hash=@h WHERE id=@id",
             new { h = Security.HashPassword(newPwd), id = userId });
+        // 改密码同时作废旧 token: 否则改密码踢下线不成立, 攻击者手上的 token 仍有效
+        await conn.ExecuteAsync("UPDATE sys_user SET token_version = token_version + 1 WHERE id=@id", new { id = userId });
     }
 
     // ---------- 商家认证 ----------

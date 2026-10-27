@@ -30,6 +30,7 @@ public class AuthService
         public bool ContactDisplay { get; set; }
         public string? ContactPhone { get; set; }
         public string Status { get; set; } = "";
+        public int TokenVersion { get; set; }
     }
 
     public async Task<UserRow?> GetUserByPhoneAsync(string phone)
@@ -37,7 +38,7 @@ public class AuthService
         using var conn = _db.Create();
         return await conn.QueryFirstOrDefaultAsync<UserRow>(
             @"SELECT id, phone, password_hash PasswordHash, nickname, avatar_url AvatarUrl, role,
-                     home_region_id HomeRegionId, contact_display ContactDisplay, contact_phone ContactPhone, status
+                     home_region_id HomeRegionId, contact_display ContactDisplay, contact_phone ContactPhone, token_version TokenVersion, status
               FROM sys_user WHERE phone=@p", new { p = phone });
     }
 
@@ -46,7 +47,7 @@ public class AuthService
         using var conn = _db.Create();
         return await conn.QueryFirstOrDefaultAsync<UserRow>(
             @"SELECT id, phone, password_hash PasswordHash, nickname, avatar_url AvatarUrl, role,
-                     home_region_id HomeRegionId, contact_display ContactDisplay, contact_phone ContactPhone, status
+                     home_region_id HomeRegionId, contact_display ContactDisplay, contact_phone ContactPhone, token_version TokenVersion, status
               FROM sys_user WHERE id=@id", new { id });
     }
 
@@ -164,12 +165,23 @@ public class AuthService
         return await IssueTokenAsync(user);
     }
 
+    /// <summary>
+    /// 让该用户此前签发的所有 token 立即失效(退出登录/改密码后调用)。
+    /// 做的是版本自增而不是黑名单: 无需存储与清理, 代价是该用户在所有设备上都要重新登录 ——
+    /// 对农户/经纪人这种基本单端使用的场景可以接受, 换来的是"退出就是真的退出"。
+    /// </summary>
+    public async Task RevokeTokensAsync(long userId)
+    {
+        using var conn = _db.Create();
+        await conn.ExecuteAsync("UPDATE sys_user SET token_version = token_version + 1 WHERE id=@id", new { id = userId });
+    }
+
     public async Task<Dtos.AuthResponse> IssueTokenAsync(UserRow user)
     {
         if (user.Status == "FROZEN") throw new BizException("账号已被冻结, 请联系管理员", ErrorCodes.Forbidden);
         using var conn = _db.Create();
         await conn.ExecuteAsync("UPDATE sys_user SET last_login_at = NOW(3) WHERE id=@id", new { user.Id });
-        var token = Security.GenerateJwt(user.Id, user.Phone, user.Role, _cfg);
+        var token = Security.GenerateJwt(user.Id, user.Phone, user.Role, user.TokenVersion, _cfg);
         return new Dtos.AuthResponse(user.Id, user.Phone, user.Nickname, user.Role, token,
             user.HomeRegionId, user.ContactDisplay, user.ContactPhone, user.AvatarUrl);
     }

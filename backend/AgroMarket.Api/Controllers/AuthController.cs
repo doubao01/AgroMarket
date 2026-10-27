@@ -27,6 +27,18 @@ public class AuthController : ControllerBase
     public async Task<ActionResult<ApiResponse<AuthResponse>>> LoginByPassword([FromBody] LoginByPasswordRequest req)
         => Ok(ApiResponse<AuthResponse>.Ok(await _auth.LoginByPasswordAsync(req.Phone, req.Password)));
 
+    /// <summary>
+    /// 退出登录。清客户端本地副本是不够的 —— token 是 7 天有效期的无状态票据,
+    /// 服务端不自增版本, 被抄走的 token 在这 7 天里依然是有效凭证。
+    /// </summary>
+    [HttpPost("logout")]
+    [RequireAuth]
+    public async Task<ActionResult<ApiResponse<object>>> Logout()
+    {
+        await _auth.RevokeTokensAsync(HttpContext.User().Id);
+        return Ok(ApiResponse<object>.Ok(null, "已退出登录"));
+    }
+
     [HttpPost("register")]
     public async Task<ActionResult<ApiResponse<AuthResponse>>> Register([FromBody] RegisterRequest req)
         => Ok(ApiResponse<AuthResponse>.Ok(await _auth.RegisterAsync(req), "注册成功"));

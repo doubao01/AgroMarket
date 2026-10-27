@@ -5,6 +5,8 @@ export const authApi = {
   loginByCode: (phone, code) => http.post('/api/auth/login/code', { phone, code }),
   loginByPassword: (phone, password) => http.post('/api/auth/login/password', { phone, password }),
   register: (data) => http.post('/api/auth/register', data),
+  // 通知服务端作废 token: 只清本地副本的话, 被抄走的 token 在 7 天内仍有效
+  logout: () => http.post('/api/auth/logout', {}, { auth: true }),
 }
 
 export const userApi = {

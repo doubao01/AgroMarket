@@ -89,10 +89,13 @@ public static class HttpContextExtensions
 
 public class TokenAuthHandler : AuthenticationHandler<TokenAuthOptions>
 {
-    public TokenAuthHandler(IOptionsMonitor<TokenAuthOptions> options, ILoggerFactory logger, UrlEncoder encoder)
-        : base(options, logger, encoder) { }
+    private readonly IDbConnectionFactory _db;
 
-    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    public TokenAuthHandler(IOptionsMonitor<TokenAuthOptions> options, ILoggerFactory logger, UrlEncoder encoder,
+        IDbConnectionFactory db)
+        : base(options, logger, encoder) => _db = db;
+
+    protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         // 命中匿名端点直接跳过
         var endpoint = Context.GetEndpoint();
@@ -108,9 +111,9 @@ public class TokenAuthHandler : AuthenticationHandler<TokenAuthOptions>
             token = Request.Headers["X-Token"].ToString();
 
         if (string.IsNullOrEmpty(token))
-            return Task.FromResult(requireAuth || requireAdmin
+            return requireAuth || requireAdmin
                 ? AuthenticateResult.Fail("未登录")
-                : AuthenticateResult.NoResult());
+                : AuthenticateResult.NoResult();
 
         try
         {
@@ -128,7 +131,23 @@ public class TokenAuthHandler : AuthenticationHandler<TokenAuthOptions>
                 ClockSkew = TimeSpan.FromMinutes(1),
             }, out _);
             var id = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (id == null) return Task.FromResult(AuthenticateResult.Fail("Token 无效"));
+            if (id == null) return AuthenticateResult.Fail("Token 无效");
+
+            // 每次请求核对 token_version 与账号状态: 这是 JWT 唯一的吊销手段。
+            // 没有这一步, 退出登录只清了客户端本地副本, 7 天内旧 token 仍可继续使用;
+            // 冻结/注销账号同理 —— 之前这里完全不看库, 冻结后 token 依然通行。
+            var claimVersion = principal.FindFirst(Security.TokenVersionClaim)?.Value;
+            if (!int.TryParse(claimVersion, out var tokenVersion))
+                return AuthenticateResult.Fail("登录已失效, 请重新登录");
+            using (var conn = _db.Create())
+            {
+                var row = await conn.QueryFirstOrDefaultAsync<(int Version, string Status)?>(
+                    "SELECT token_version Version, status Status FROM sys_user WHERE id=@id", new { id = long.Parse(id) });
+                if (row is null || row.Value.Status != "ACTIVE")
+                    return AuthenticateResult.Fail("账号不可用, 请重新登录");
+                if (row.Value.Version != tokenVersion)
+                    return AuthenticateResult.Fail("登录已失效, 请重新登录");
+            }
             var user = new CurrentUser
             {
                 Id = long.Parse(id),
@@ -136,15 +155,15 @@ public class TokenAuthHandler : AuthenticationHandler<TokenAuthOptions>
                 Role = principal.FindFirst(ClaimTypes.Role)?.Value ?? "",
             };
             Context.Items["CurrentUser"] = user;
-            return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(principal, "Token")));
+            return AuthenticateResult.Success(new AuthenticationTicket(principal, "Token"));
         }
         catch (Microsoft.IdentityModel.Tokens.SecurityTokenExpiredException)
         {
-            return Task.FromResult(AuthenticateResult.Fail("登录已过期"));
+            return AuthenticateResult.Fail("登录已过期");
         }
         catch
         {
-            return Task.FromResult(AuthenticateResult.Fail("Token 无效"));
+            return AuthenticateResult.Fail("Token 无效");
         }
     }
 

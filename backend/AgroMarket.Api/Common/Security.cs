@@ -8,6 +8,8 @@ namespace AgroMarket.Api.Common;
 
 public static class Security
 {
+    /// <summary>JWT 里携带 token_version 的 claim 名, 与 sys_user.token_version 比对。</summary>
+    public const string TokenVersionClaim = "tv";
     public static string HashPassword(string password, string? saltB64 = null)
     {
         saltB64 ??= Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
@@ -26,7 +28,7 @@ public static class Security
             Encoding.UTF8.GetBytes(computed), Encoding.UTF8.GetBytes(stored));
     }
 
-    public static string GenerateJwt(long userId, string phone, string role, IConfiguration cfg)
+    public static string GenerateJwt(long userId, string phone, string role, int tokenVersion, IConfiguration cfg)
     {
         var section = cfg.GetSection("Jwt");
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(section["SecretKey"]!));
@@ -35,6 +37,8 @@ public static class Security
             new(ClaimTypes.NameIdentifier, userId.ToString()),
             new(ClaimTypes.MobilePhone, phone),
             new(ClaimTypes.Role, role),
+            // 吊销用: 与 sys_user.token_version 比对, 退出登录/改密码后自增, 旧 token 立即失效
+            new(TokenVersionClaim, tokenVersion.ToString()),
         };
         var token = new JwtSecurityToken(
             issuer: section["Issuer"],
