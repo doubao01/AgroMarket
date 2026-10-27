@@ -69,6 +69,7 @@ builder.Services.AddScoped<AgroMarket.Api.Chat.Application.ChatService>();
 builder.Services.AddScoped<AgroMarket.Api.Chat.Application.ChatTradeService>();
 builder.Services.AddSingleton<AgroMarket.Api.Chat.Realtime.ChatConnectionManager>();
 builder.Services.AddSingleton<AgroMarket.Api.Common.StripedLock>();
+builder.Services.AddSingleton<AnonymousReadThrottle>();
 builder.Services.AddScoped<AgroMarket.Api.Chat.Realtime.IRealtimeNotifier, AgroMarket.Api.Chat.Realtime.ChatRealtimeNotifier>();
 // 支付渠道(可插拔): 真实渠道未配置时不可用, 不伪造支付
 builder.Services.AddSingleton<IPaymentProvider, MockPaymentProvider>();
@@ -230,6 +231,24 @@ app.UseCors("web");
 app.UseWebSockets();
 app.UseMiddleware<BizExceptionMiddleware>();
 app.UseMiddleware<AgroMarket.Api.Federation.Api.AggregatorReadOnlyMiddleware>();
+
+// 匿名公开读的频次限制: 供需列表允许未登录浏览, 但不能成为无限翻页抓取的数据源
+app.Use(async (ctx, next) =>
+{
+    var path = ctx.Request.Path.Value ?? "";
+    var isPublicRead = HttpMethods.IsGet(ctx.Request.Method)
+        && (path.StartsWith("/api/supplies", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("/api/demands", StringComparison.OrdinalIgnoreCase));
+    var hasToken = ctx.Request.Headers.Authorization.Count > 0 || ctx.Request.Headers["X-Token"].Count > 0;
+    if (isPublicRead && !hasToken
+        && ctx.RequestServices.GetRequiredService<AnonymousReadThrottle>().ShouldReject(ctx.Connection.RemoteIpAddress?.ToString()))
+    {
+        ctx.Response.StatusCode = ErrorCodes.TooManyRequests;
+        await ctx.Response.WriteAsJsonAsync(ApiResponse<object>.Fail(ErrorCodes.TooManyRequests, "访问过于频繁, 请稍后再试或登录后浏览"));
+        return;
+    }
+    await next();
+});
 app.UseStatusCodePages(async context =>
 {
     var response = context.HttpContext.Response;

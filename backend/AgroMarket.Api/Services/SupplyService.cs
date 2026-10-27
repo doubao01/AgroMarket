@@ -113,7 +113,7 @@ public class SupplyService
             q.PublisherId = viewerId;
         }
         else if (!admin) q = q with { Status = "PUBLIC" };
-        if (q.Page < 1) q.Page = 1;
+        q.Page = Paging.Normalize(q.Page);
         if (q.PageSize is < 1 or > 50) q.PageSize = 10;
         var (where, p) = await BuildWhereAsync(q);
         p.Add("limit", q.PageSize);
@@ -134,11 +134,11 @@ public class SupplyService
         using var conn = _db.Create();
         var total = await conn.ExecuteScalarAsync<long>(string.Format(CountSql, where), p);
         var rows = (await conn.QueryAsync<SupplyRow>(string.Format(SelectSql, where, orderBy), p)).ToList();
-        var items = await AttachImagesAsync(conn, rows);
+        var items = await AttachImagesAsync(conn, rows, viewerId > 0 || admin);
         return new Dtos.PagedResult<Dtos.SupplyDto>(items, total, q.Page, q.PageSize);
     }
 
-    private async Task<List<Dtos.SupplyDto>> AttachImagesAsync(IDbConnection conn, List<SupplyRow> rows)
+    private async Task<List<Dtos.SupplyDto>> AttachImagesAsync(IDbConnection conn, List<SupplyRow> rows, bool preciseLocation)
     {
         if (rows.Count == 0) return new();
         var ids = rows.Select(r => r.Id).ToList();
@@ -155,7 +155,9 @@ public class SupplyService
             imgs.TryGetValue(r.Id, out var imgList);
             result.Add(new Dtos.SupplyDto(r.Id, r.PublisherId, r.PublisherName, r.Title, r.CategoryId, r.CategoryName,
                 r.Description, r.Quantity, r.Unit, r.Price, r.PriceUnit, r.Negotiable, r.MinOrderQty,
-                r.CountyId, cName, r.TownId, tName, r.VillageId, vName,
+                // 乡镇/村级位置只给已登录用户: 匿名页可无限翻, "某农户在某村卖什么"是可识别组合
+                r.CountyId, cName, preciseLocation ? r.TownId : null, preciseLocation ? tName : null,
+                preciseLocation ? r.VillageId : null, preciseLocation ? vName : null,
                 r.Spec, r.HarvestTime, r.DeliveryMode,
                 // 联系方式仅发布者本人可见, 其他人通过报价流程联系
                 null, r.TradeNote, r.Status, r.CreatedAt,
@@ -174,7 +176,7 @@ public class SupplyService
         var phoneVisible = await PhoneAccessPolicy.CanSeeAsync(conn, viewerId, row.PublisherId);
         if (row.Status != "ACTIVE" && !phoneVisible)
             throw new BizException("供应信息不存在", ErrorCodes.NotFound);
-        var list = await AttachImagesAsync(conn, new List<SupplyRow> { row });
+        var list = await AttachImagesAsync(conn, new List<SupplyRow> { row }, phoneVisible);
         var dto = list[0];
         if (phoneVisible)
             return dto with { ContactPhone = row.ContactPhone };

@@ -6,12 +6,15 @@ namespace AgroMarket.Api.Common;
 /// </summary>
 public static class Paging
 {
-    /// <summary>页号上限: 10000 页 × 200 条/页 已远超业务需要, 再大只会全表扫描。</summary>
-    public const int MaxPage = 10000;
+    /// <summary>页号上限: 200 页 × 50 条 = 1 万条, 已远超实际业务需要。原先 10000 页等于给匿名抓取留了 50 万条的翻页空间, 再深只会退化成全表扫描。</summary>
+    public const int MaxPage = 200;
+
+    /// <summary>把页号夹到合法区间, 让响应里的 page 与实际取数一致(而不是回显调用方传的超大值)。</summary>
+    public static int Normalize(int page) => Math.Clamp(page, 1, MaxPage);
 
     public static long Offset(int page, int pageSize)
     {
-        var p = Math.Clamp(page, 1, MaxPage);
+        var p = Normalize(page);
         return (long)(p - 1) * Math.Max(pageSize, 0);
     }
 }

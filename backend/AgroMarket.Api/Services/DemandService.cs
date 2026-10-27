@@ -72,7 +72,7 @@ public class DemandService
             q.PublisherId = viewerId;
         }
         else if (!admin) q = q with { Status = "PUBLIC" };
-        if (q.Page < 1) q.Page = 1;
+        q.Page = Paging.Normalize(q.Page);
         if (q.PageSize is < 1 or > 50) q.PageSize = 10;
         var w = new List<string>();
         var p = new DynamicParameters();
@@ -125,11 +125,11 @@ public class DemandService
         using var conn = _db.Create();
         var total = await conn.ExecuteScalarAsync<long>(string.Format(CountSql, where), p);
         var rows = (await conn.QueryAsync<DemandRow>(string.Format(SelectSql, where, orderBy), p)).ToList();
-        var items = await AttachAsync(conn, rows);
+        var items = await AttachAsync(conn, rows, viewerId > 0 || admin);
         return new Dtos.PagedResult<Dtos.DemandDto>(items, total, q.Page, q.PageSize);
     }
 
-    private async Task<List<Dtos.DemandDto>> AttachAsync(IDbConnection conn, List<DemandRow> rows)
+    private async Task<List<Dtos.DemandDto>> AttachAsync(IDbConnection conn, List<DemandRow> rows, bool preciseLocation = true)
     {
         if (rows.Count == 0) return new();
         var ids = rows.Select(r => r.Id).ToList();
@@ -146,7 +146,9 @@ public class DemandService
             imgs.TryGetValue(r.Id, out var imgList);
             result.Add(new Dtos.DemandDto(r.Id, r.PublisherId, r.PublisherName, r.Title, r.CategoryId, r.CategoryName,
                 r.Description, r.Quantity, r.Unit, r.PriceMin, r.PriceMax, r.PriceUnit, r.SpecRequired,
-                r.CountyId, cName, r.TownId, tName, r.VillageId, r.ExpectDate, r.PackagingNote,
+                // 与供应列表同口径: 乡镇/村级位置只给已登录用户
+                r.CountyId, cName, preciseLocation ? r.TownId : null, preciseLocation ? tName : null,
+                preciseLocation ? r.VillageId : null, r.ExpectDate, r.PackagingNote,
                 r.ContactName, null, r.Status, r.CreatedAt, r.Negotiable,
                 qcnt.TryGetValue(r.Id, out var qc) ? qc : 0,
                 (imgList ?? new()).Select(i => new Dtos.DemandImageDto(i.Id, i.Url)).ToList()));
@@ -163,7 +165,7 @@ public class DemandService
         var phoneVisible = await PhoneAccessPolicy.CanSeeAsync(conn, viewerId, r.PublisherId);
         if (r.Status != "ACTIVE" && !phoneVisible)
             throw new BizException("采购需求不存在", ErrorCodes.NotFound);
-        var dto = (await AttachAsync(conn, new List<DemandRow> { r }))[0];
+        var dto = (await AttachAsync(conn, new List<DemandRow> { r }, phoneVisible))[0];
         return dto with { ContactPhone = phoneVisible ? r.ContactPhone : null };
     }
 
