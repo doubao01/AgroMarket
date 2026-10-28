@@ -115,7 +115,7 @@ cd backend && dotnet run --project AgroMarket.Api
 - 权限：所有端点校验 `ChatParticipant` 成员身份，`userId` 一律取自 token，不信任客户端传参；`chat_block` 双向拦截。
 - 实时通道：`GET /ws/chat`（原生 WebSocket，ADR-1）。握手鉴权用 `?token=`（也兼容 `Authorization`/`X-Token` 头）；消息先落库再推送，协议上行 `ping/send/read/delivered/typing/recall`，下行 `connected/pong/message/read/delivered/typing/recall/ack/error`；连接注册表为单进程内存实现（`ChatConnectionManager`），推送通过 `IRealtimeNotifier` 抽象，多实例部署时替换为 Redis 广播即可。
 - 微信式富消息：撤回（发送者 2 分钟内，`chat_message.status=RECALLED` + `recalled_at`，内容在出参中脱敏）、引用回复（`reply_to_message_id`，校验引用消息属同一会话）、图片消息（`IMAGE` + `payload.url`）、送达回执（`chat_participant.last_delivered_message_id`）、输入状态广播（不落库）、对端已读/已送达游标随消息分页返回，用于计算己方消息状态。
-- 交易状态不受聊天影响，报价/订单仍由 `TradeService` 状态机变更（见 `当前工作区/.monkeycode/docs/chat-adr.md`）。
+- 交易状态不受聊天影响，报价/订单仍由 `TradeService` 状态机变更（见 `docs/chat-adr.md`）。
 
 接口：
 
@@ -178,7 +178,7 @@ cd backend && dotnet run --project AgroMarket.Api
 | POST | `/api/ai/insight` | 大屏智能解读（仅管理员） |
 | POST | `/api/ai/ask` | 大屏数据问答（仅管理员，数字必须来自工具） |
 
-AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡镇地区分布、供应搜索、需求搜索、我的订单。工具调用遵循 OpenAI 协议（回传 assistant `tool_calls` 与 tool `tool_call_id`），轮次上限 3。AI 端点均做输入长度上限与按用户频控（`AiRateLimiter`）。严禁任意 SQL、下单/支付等写操作与跨用户隐私数据。设计详见 `当前工作区/.monkeycode/docs/ai-dashboard-design.md`。
+AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡镇地区分布、供应搜索、需求搜索、我的订单。工具调用遵循 OpenAI 协议（回传 assistant `tool_calls` 与 tool `tool_call_id`），轮次上限 3。AI 端点均做输入长度上限与按用户频控（`AiRateLimiter`）。严禁任意 SQL、下单/支付等写操作与跨用户隐私数据。设计详见 `docs/ai-dashboard-design.md`。
 
 ## 多节点联动（数据上报 / 同步）
 
@@ -192,7 +192,7 @@ AI 工具白名单（`Ai/Tools/`，只读）：平台总览、成交趋势、乡
 - **运行时设置**：`FederationSettings` 以 `fed_setting` 持久化白名单键（`AutoSync`/`SyncIntervalMinutes`/`BackfillDays`/`RecordWindowHours`/`IncludeSelfInAggregate`/`ForwardReceived`/`AcceptForwarded`/`HealthStaleMinutes`/`NodeName`/`RegionCode`），覆盖配置文件并即时生效；`GET/PUT api/admin/federation/settings` 读写。
 - **全景汇聚**：`GET api/admin/federation/aggregate` 默认把本节点自身指标一并纳入（来源=本节点编码），得到"本节点 + 对端"全景；`Federation:IncludeSelfInAggregate=false` 时仅汇总已接收的对端数据。另支持 `?regionPrefix=` 按来源节点区划码前缀过滤（省=前 2 位，市=前 4 位）。
 - **同步健康**：`GET api/admin/federation/health` 返回各对端 `healthy/stale/lastError`（阈值 `EffectiveStaleMinutes`）。
-- **部署**：每个节点部署一套独立 `{ MySQL + API }`（迁移 SQL 内写死 `USE agro_market`，同一 MySQL 实例不能承载两个节点）。开箱即用的省/市/县单节点交付物见根目录 `deploy/`；三级集群编排见 `docker-compose.cluster.yml`，引导脚本 `scripts/federation-bootstrap.sh`，完整手册见 `.monkeycode/docs/federation-deploy.md`。
+- **部署**：每个节点部署一套独立 `{ MySQL + API }`（迁移 SQL 内写死 `USE agro_market`，同一 MySQL 实例不能承载两个节点）。开箱即用的省/市/县单节点交付物见根目录 `deploy/`；三级集群编排见 `docker-compose.cluster.yml`，引导脚本 `scripts/federation-bootstrap.sh`，完整手册见 `docs/federation-deploy.md`。
 
 ## 文件上传（断点续传）
 - `POST /api/files/upload/init`：初始化分片会话，返回 `uploadId`、`chunkSize`、`totalChunks`。

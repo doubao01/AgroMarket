@@ -183,3 +183,6 @@
 
 # Local development secrets (DB connection, JWT secret, AI ApiKey)
 backend/AgroMarket.Api/appsettings.Development.json
+
+# AI 协作工具的私有工作区: 含内部审计报告与资产风险清单, 不入库
+.monkeycode/

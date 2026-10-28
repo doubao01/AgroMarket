@@ -1,5 +1,7 @@
 # 息县农贸通（AgroMarket）
 
+![CI](https://github.com/doubao01/AgroMarket/actions/workflows/ci.yml/badge.svg)
+
 县域农产品自由交易平台。面向河南省信阳市息县的农户、合作社、采购商与商户，提供供应发布、采购需求、在线协商报价、订单履约登记与平台运营管理能力。
 
 ## 技术栈
@@ -169,7 +171,7 @@ dotnet run --project AgroMarket.Tests
   - 内容发布辅助：供应/采购发布页"AI 帮我写"按钮，`/api/ai/assist/publish` 生成描述/分类/价格区间，仅预填表单。
   - 大屏智能解读：大屏页 `AI 数据解读` 卡片，`/api/ai/insight` 自动生成结论、`/api/ai/ask` 对数据提问。
 - **配置**：LLM 通过 `Ai:*`（`BaseUrl`/`Model`/`ApiKey`）配置，Key 可用环境变量 `Ai__ApiKey` 覆盖，代码不硬编码；未配置时 AI 接口返回 `501`，不影响业务。本地开发配置文件 `backend/AgroMarket.Api/appsettings.Development.json` 不入库（含密钥），首次使用请复制 `appsettings.Development.json.example` 并填入数据库口令与 `Ai:ApiKey`。
-- 设计文档：`当前工作区/.monkeycode/docs/ai-dashboard-design.md`。
+- 设计文档：`docs/ai-dashboard-design.md`。
 
 ## 多节点联动（数据上报 / 同步）
 
@@ -187,7 +189,7 @@ dotnet run --project AgroMarket.Tests
 - **界面**：管理后台"联动"页对端节点按省 / 市 / 县分组展示，并含"设置"Tab（同步健康 + 运行设置 + 密钥管理）；`aggregate` 默认纳入本节点，形成"本节点 + 对端"全景汇聚（可用 `IncludeSelfInAggregate=false` 关闭）。
 - **省/市视角**：`aggregate?regionPrefix=` 可按区划码前缀过滤来源节点（省=前 2 位如 `41`，市=前 4 位如 `4101`）；健康总览 `GET api/admin/federation/health` 查看各对端 `healthy/stale/lastError`。
 - **部署**：开箱即用的**省 / 市 / 县三套单节点交付物**见 `deploy/`；三级一体编排见 `docker-compose.cluster.yml`（1 省 + 1 市 + 2 县），`federation-bootstrap` 一次性完成"互相登记对端 + 首轮同步"。本机两实例快速演示：`sh scripts/federation-demo.sh`。
-- 设计文档：`当前工作区/.monkeycode/docs/federation-design.md`；部署手册：`当前工作区/.monkeycode/docs/federation-deploy.md`。
+- 设计文档：`docs/federation-design.md`；部署手册：`docs/federation-deploy.md`。
 
 ## 重要说明
 
@@ -217,16 +219,32 @@ docker compose -f docker-compose.cluster.yml --env-file .env.cluster logs -f fed
 
 - `FEDERATION_SHARED_KEY` 必须**所有节点一致**（≥32 字节）；每节点 `Federation__NodeCode/NodeName/Level/RegionCode` 各不相同。
 - 生产建议 `FEDERATION_TOKEN_MODE=ASYMMETRIC`、省级 `Federation__Role=AGGREGATOR`、`FEDERATION_BACKFILL_DAYS=7`。
-- 数据库首启自动按序执行 `01`–`09` 全部迁移（含联动表 / 密钥表 / 运行设置表）。
+- 数据库首启自动按序执行 `database/[0-9][0-9]_*.sql` 全部迁移（含联动表 / 密钥表 / 运行设置表 / 支付与订单幂等）。
 - **开箱即用的单节点交付物**：`deploy/province`（省）、`deploy/city`（市）、`deploy/county`（县），各自 `cp .env.example .env && docker compose up -d --build`。
-- 完整流程、扩容与排障见 `当前工作区/.monkeycode/docs/federation-deploy.md`。
+- 完整流程、扩容与排障见 `docs/federation-deploy.md`。
 
 ## 文档索引
 
 - `backend/README.md`：后端结构、配置项、接口约定、已知问题
 - `database/数据说明.md`：区划数据来源、可信度标注与待补充清单
-- `当前工作区/.monkeycode/docs/chat-adr.md`：站内聊天模块架构决策（ADR）
-- `当前工作区/.monkeycode/docs/ai-dashboard-design.md`：AI 能力接入 + 数据大屏设计文档
-- `当前工作区/.monkeycode/docs/federation-design.md`：多节点联动设计文档
-- `当前工作区/.monkeycode/docs/federation-deploy.md`：多级节点部署手册
+- `docs/chat-adr.md`：站内聊天模块架构决策（ADR）
+- `docs/ai-dashboard-design.md`：AI 能力接入 + 数据大屏设计文档
+- `docs/federation-design.md`：多节点联动设计文档
+- `docs/federation-deploy.md`：多级节点部署手册
+- `CHANGELOG.md`：变更记录
 - `/swagger`：在线接口文档（仅开发环境）
+
+## 贡献
+
+欢迎提交 Issue 与 Pull Request，请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md)
+（含开发环境搭建、迁移脚本的两条硬性约定、测试运行方式与提交规范）。
+
+安全问题请走 [SECURITY.md](SECURITY.md) 中的私密报告通道，不要开公开 Issue。
+
+## 许可证
+
+本项目采用 [Apache License 2.0](LICENSE) 许可。
+
+> 部署方请注意：示例配置中的凭据一律不可用于生产，
+> 且 `database/99_demo_seed.sql` 含口令公开的演示账号（默认不执行）。
+> 详见 [SECURITY.md](SECURITY.md)。
