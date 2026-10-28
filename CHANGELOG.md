@@ -43,14 +43,25 @@
 - `CONTRIBUTING.md`、`SECURITY.md`、`.editorconfig`、`backend/AgroMarket.slnx`。
 - `docs/`：迁入原 `.monkeycode/docs/` 下的设计文档（聊天 ADR、AI 大屏、联邦设计与部署）。
 
+### 安全
+
+- **重写 git 历史，清除此前进入版本控制的开发凭据与内部文档。**
+  `backend/AgroMarket.Api/appsettings.Development.json` 自首个提交起就被跟踪，
+  含真实 AI ApiKey、数据库口令与 `Jwt:SecretKey`；内部工作区 `.monkeycode/`
+  含资损/越权/隐私的完整审计清单。现用 `git filter-repo` 将该文件与 `.monkeycode/`
+  从**全部提交**中移除，并把旧版 `README.md`、`scripts/federation-demo.sh` 中
+  出现过的开发口令替换为占位符。
+  - `HEAD` 的目录树对象不变（`35bc96c`），即当前代码与文档内容未受影响，仅历史变更。
+  - 联动 `.monkeycode` 中只含文档的 10 个提交因变空而被剪除，无代码提交丢失。
+  - 历史重写不能让已公开的内容重新保密：已被克隆或 fork 的旧副本不受影响。
+
 ### 移除
 
-- `.monkeycode/`（AI 协作工具私有工作区）不再纳入版本控制，已加入 `.gitignore`。
-  该目录含内部审计报告与资产风险清单，不适合随开源仓库分发。
+- `.monkeycode/`（AI 协作工具私有工作区）不再纳入版本控制，已加入 `.gitignore`，
+  并已从 git 历史中移除。该目录含内部审计报告与资产风险清单，不适合随开源仓库分发。
 
 ### 已知待办
 
 - **吊销并更换历史遗留的 AI ApiKey**：该 key 曾进入 git 历史，应视为已泄露。
-- **重写 git 历史**以移除历史提交中的开发凭据
-  （`git filter-repo`，需在吊销密钥之后执行，且需所有协作者重新克隆）。
+  历史重写已完成，但重写不能让已暴露的密钥重新保密——吊销与轮换仍需在服务商侧完成。
 - 集成测试目前是控制台黑盒测试，尚无单元测试与覆盖率统计。
