@@ -231,7 +231,7 @@ public class SupplyService
                     price=@price, price_unit=@punit, negotiable=@nego, min_order_qty=@moq, county_id=@county, town_id=@town,
                     village_id=@village, spec=@spec, harvest_time=@harvest, delivery_mode=@delivery, contact_phone=@phone,
                     trade_note=@note, effective_days=@days, expire_at=DATE_ADD(NOW(3), INTERVAL @days DAY), status='PENDING'
-                WHERE id=@id AND publisher_id=@pub",
+                WHERE id=@id AND publisher_id=@pub AND status <> 'VIOLATION'",
                 new { req.Title, cat = req.CategoryId, desc = req.Description, qty = req.Quantity, req.Unit, req.Price, punit = req.PriceUnit,
                     nego = req.Negotiable, moq = req.MinOrderQty, county = req.CountyId, town = req.TownId, village = req.VillageId, req.Spec, harvest = req.HarvestTime,
                     delivery = req.DeliveryMode, phone = req.ContactPhone, note = req.TradeNote, days = req.EffectiveDays, id, pub = userId }, tx);
@@ -253,18 +253,20 @@ public class SupplyService
         using var conn0 = _db.Create();
         var isAdmin = await conn0.ExecuteScalarAsync<bool>("SELECT role='ADMIN' FROM sys_user WHERE id=@id", new { id = userId });
         if (owner != userId && !isAdmin) throw new BizException("无权操作他人的供应信息", ErrorCodes.Forbidden);
-        var target = action switch
+        // CAS: 显式列出允许的来源状态, 防止发布者用 re_activate 覆盖管理员的违规/过期处置
+        var (target, fromStatuses) = action switch
         {
-            "off_shelf" => "OFF_SHELF",
-            "re_activate" => "PENDING",
-            "sold_out" => "SOLD_OUT",
+            "off_shelf" => ("OFF_SHELF", new[] { "ACTIVE", "SOLD_OUT", "PENDING" }),
+            "re_activate" => ("PENDING", new[] { "OFF_SHELF", "SOLD_OUT" }),
+            "sold_out" => ("SOLD_OUT", new[] { "ACTIVE", "OFF_SHELF" }),
             _ => throw new BizException("不支持的操作"),
         };
+        var inList = string.Join(",", fromStatuses.Select(x => "'" + x + "'"));
         using var conn = _db.Create();
         var affected = await conn.ExecuteAsync(
-            "UPDATE product_supply SET status=@st WHERE id=@id" + (isAdmin ? "" : " AND publisher_id=@uid"),
+            $"UPDATE product_supply SET status=@st WHERE id=@id AND status IN ({inList})" + (isAdmin ? "" : " AND publisher_id=@uid"),
             new { st = target, id, uid = userId });
-        if (affected == 0) throw new BizException("操作失败, 状态可能已变更", ErrorCodes.Conflict);
+        if (affected == 0) throw new BizException("操作失败, 当前状态不允许该操作", ErrorCodes.Conflict);
     }
 
     public async Task<long> GetOwnerAsync(long id)

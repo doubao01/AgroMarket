@@ -113,7 +113,7 @@ export default {
     },
     goOrder() { uni.navigateTo({ url: '/pages/order/detail?id=' + this.q.orderId }) },
     statusText(s) {
-      return { PENDING: '待回复', NEGOTIATED: '已还价', ACCEPTED: '已接受', REJECTED: '已拒绝', DEALED: '已成交' }[s] || s
+      return { PENDING: '待回复', NEGOTIATED: '已还价', ACCEPTED: '已接受', REJECTED: '已拒绝', DEALED: '已成交', CLOSED: '已关闭' }[s] || s
     },
   },
 }

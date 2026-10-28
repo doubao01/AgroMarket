@@ -137,23 +137,31 @@ public class CommunityService
         // 与 community_comment.content VARCHAR(1000) 对齐, 否则超长会触发 MySQL 1406 被兜成 500
         if (req.Content.Trim().Length > 1000) throw new BizException("评论内容过长", ErrorCodes.BadRequest);
         using var conn = _db.Create();
+        conn.Open();
+        using var tx = conn.BeginTransaction();
         var post = await conn.QuerySingleOrDefaultAsync<(long Id, long UserId)>(
-            "SELECT id Id, user_id UserId FROM community_post WHERE id=@id AND status='ACTIVE'", new { id = postId });
+            "SELECT id Id, user_id UserId FROM community_post WHERE id=@id AND status='ACTIVE'", new { id = postId }, tx);
         if (post.Id == 0) throw new BizException("帖子不存在或已被隐藏", ErrorCodes.NotFound);
         long? parentId = null, replyUserId = null;
         if (req.ParentId is > 0)
         {
             var parent = await conn.QuerySingleOrDefaultAsync<(long Id, long UserId, long PostId)>(
                 "SELECT id Id, user_id UserId, post_id PostId FROM community_comment WHERE id=@pid AND post_id=@id AND status='ACTIVE'",
-                new { pid = req.ParentId, id = postId });
+                new { pid = req.ParentId, id = postId }, tx);
             if (parent.Id == 0) throw new BizException("被回复的评论不存在", ErrorCodes.NotFound);
             parentId = parent.Id;
             replyUserId = parent.UserId;
         }
-        var commentId = await conn.ExecuteScalarAsync<long>(
-            "INSERT INTO community_comment (post_id, user_id, parent_id, reply_user_id, content) VALUES (@p, @u, @pa, @ru, @c); SELECT LAST_INSERT_ID();",
-            new { p = postId, u = userId, pa = parentId, ru = replyUserId, c = req.Content.Trim() });
-        await conn.ExecuteAsync("UPDATE community_post SET comment_count=comment_count+1 WHERE id=@p", new { p = postId });
+        long commentId;
+        try
+        {
+            commentId = await conn.ExecuteScalarAsync<long>(
+                "INSERT INTO community_comment (post_id, user_id, parent_id, reply_user_id, content) VALUES (@p, @u, @pa, @ru, @c); SELECT LAST_INSERT_ID();",
+                new { p = postId, u = userId, pa = parentId, ru = replyUserId, c = req.Content.Trim() }, tx);
+            await conn.ExecuteAsync("UPDATE community_post SET comment_count=comment_count+1 WHERE id=@p", new { p = postId }, tx);
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
         // 通知帖主(或被回复人), 评论者自己不通知
         var notifyTo = replyUserId ?? post.UserId;
         if (notifyTo != userId)
@@ -172,24 +180,33 @@ public class CommunityService
     public async Task<bool> ToggleLikeAsync(long userId, long postId)
     {
         using var conn = _db.Create();
-        // post_like 无外键, 必须先校验帖子存在且可见, 否则会写入指向不存在帖子的孤儿点赞
-        var postExists = await conn.ExecuteScalarAsync<int?>(
-            "SELECT 1 FROM community_post WHERE id=@p AND status='ACTIVE'", new { p = postId });
-        if (postExists == null) throw new BizException("帖子不存在或已被隐藏", ErrorCodes.NotFound);
-        // 用 DELETE 的影响行数判定"之前是否已点赞", 再按实际 INSERT 行数累加:
-        // 并发点赞时 INSERT IGNORE 可能 0 行, 若无条件 +1 会让 like_count 虚高
-        var removed = await conn.ExecuteAsync(
-            "DELETE FROM post_like WHERE post_id=@p AND user_id=@u", new { p = postId, u = userId });
-        if (removed > 0)
+        conn.Open();
+        // 校验 + 点赞表写入 + 计数更新同事务: 中途失败会留下"有点赞没计数"的永久偏移
+        using var tx = conn.BeginTransaction();
+        try
         {
-            await conn.ExecuteAsync("UPDATE community_post SET like_count=GREATEST(like_count-1,0) WHERE id=@p", new { p = postId });
-            return false;
+            // post_like 无外键, 必须先校验帖子存在且可见, 否则会写入指向不存在帖子的孤儿点赞
+            var postExists = await conn.ExecuteScalarAsync<int?>(
+                "SELECT 1 FROM community_post WHERE id=@p AND status='ACTIVE'", new { p = postId }, tx);
+            if (postExists == null) throw new BizException("帖子不存在或已被隐藏", ErrorCodes.NotFound);
+            // 用 DELETE 的影响行数判定"之前是否已点赞", 再按实际 INSERT 行数累加:
+            // 并发点赞时 INSERT IGNORE 可能 0 行, 若无条件 +1 会让 like_count 虚高
+            var removed = await conn.ExecuteAsync(
+                "DELETE FROM post_like WHERE post_id=@p AND user_id=@u", new { p = postId, u = userId }, tx);
+            if (removed > 0)
+            {
+                await conn.ExecuteAsync("UPDATE community_post SET like_count=GREATEST(like_count-1,0) WHERE id=@p", new { p = postId }, tx);
+                tx.Commit();
+                return false;
+            }
+            var inserted = await conn.ExecuteAsync(
+                "INSERT IGNORE INTO post_like (post_id, user_id) VALUES (@p, @u)", new { p = postId, u = userId }, tx);
+            if (inserted > 0)
+                await conn.ExecuteAsync("UPDATE community_post SET like_count=like_count+1 WHERE id=@p", new { p = postId }, tx);
+            tx.Commit();
+            return true;
         }
-        var inserted = await conn.ExecuteAsync(
-            "INSERT IGNORE INTO post_like (post_id, user_id) VALUES (@p, @u)", new { p = postId, u = userId });
-        if (inserted > 0)
-            await conn.ExecuteAsync("UPDATE community_post SET like_count=like_count+1 WHERE id=@p", new { p = postId });
-        return true;
+        catch { tx.Rollback(); throw; }
     }
 
     // ---------- 管理端帖子列表 ----------

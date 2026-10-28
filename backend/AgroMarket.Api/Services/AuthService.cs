@@ -168,11 +168,20 @@ public class AuthService
         if (req.HomeRegionId != null) _ = await new RegionService(_db).ValidateRegionAsync(req.HomeRegionId, null);
 
         using var conn = _db.Create();
-        var id = await conn.ExecuteScalarAsync<long>(
-            @"INSERT INTO sys_user (phone, password_hash, nickname, role, home_region_id)
-              VALUES (@p, @h, @n, @r, @hrid); SELECT LAST_INSERT_ID();",
-            new { p = req.Phone, h = Security.HashPassword(req.Password), n = req.Nickname, r = req.Role, hrid = req.HomeRegionId });
-        await conn.ExecuteAsync("INSERT INTO sys_user_role (user_id, role) VALUES (@u, @r)", new { u = id, r = req.Role });
+        conn.Open();
+        // 主表与角色表必须同事务: 中途失败会留下"有账号没角色"的永久不一致
+        using var tx = conn.BeginTransaction();
+        long id;
+        try
+        {
+            id = await conn.ExecuteScalarAsync<long>(
+                @"INSERT INTO sys_user (phone, password_hash, nickname, role, home_region_id)
+                  VALUES (@p, @h, @n, @r, @hrid); SELECT LAST_INSERT_ID();",
+                new { p = req.Phone, h = Security.HashPassword(req.Password), n = req.Nickname, r = req.Role, hrid = req.HomeRegionId }, tx);
+            await conn.ExecuteAsync("INSERT INTO sys_user_role (user_id, role) VALUES (@u, @r)", new { u = id, r = req.Role }, tx);
+            tx.Commit();
+        }
+        catch { tx.Rollback(); throw; }
         var user = await GetUserByIdAsync(id) ?? throw new BizException("注册失败", ErrorCodes.ServerError);
         return await IssueTokenAsync(user);
     }

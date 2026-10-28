@@ -192,13 +192,25 @@ public class FederationService
                     page++;
 
                     var next = export.NextSince;
-                    if (!export.HasMore || !next.HasValue || next.Value <= since || page >= 100)
+                    if (!export.HasMore)
                     {
-                        // 取完 / 无更多 / 无法推进游标 / 页数上限: 游标推进到本次导出时刻
-                        cursor = export.GeneratedAt == default ? DateTime.Now : export.GeneratedAt;
+                        // 对端已无更多: 可安全推进到对端水位(优先 NextSince, 否则其导出时刻)
+                        cursor = next ?? (export.GeneratedAt == default ? DateTime.Now : export.GeneratedAt);
+                        break;
+                    }
+                    if (!next.HasValue || next.Value <= since)
+                    {
+                        // 游标无法推进: 保留已消费水位, 不跳到墙钟, 否则中间明细会被永久跳过
                         break;
                     }
                     since = next.Value;
+                    cursor = next.Value; // 本页消费成功, 水位单调前移到该页的继续点
+                    if (page >= 100)
+                    {
+                        // 触顶: 只推进到已消费水位, 下一轮从该点继续, 不丢数据
+                        _logger.LogInformation("联动拉取 {Node} 达单轮页数上限, 游标保留在 {Cursor:o} 待下轮续拉", node.NodeCode, cursor);
+                        break;
+                    }
                 }
 
                 await _repo.SetCursorAsync(node.NodeCode, "RECORD", cursor);

@@ -482,7 +482,7 @@ export default {
     },
     quoteStatus(m) {
       const p = m.payload || {}
-      const map = { PENDING: '待回复', NEGOTIATED: '已还价', ACCEPTED: '已接受', REJECTED: '已拒绝', DEALED: '已成交' }
+      const map = { PENDING: '待回复', NEGOTIATED: '已还价', ACCEPTED: '已接受', REJECTED: '已拒绝', DEALED: '已成交', CLOSED: '已关闭' }
       return map[p.status] || p.status || ''
     },
     orderStatus(m) {

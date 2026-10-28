@@ -26,12 +26,15 @@ public class TradeService
             decimal.Round(quantity, 2) != quantity || decimal.Round(price, 2) != price || price * quantity > 999999999999.99m)
             throw new BizException("价格和数量须为有效正数，最多两位小数，且总金额在允许范围内");
         var sql = supplyId != null
-            ? "SELECT quantity, COALESCE(min_order_qty,0), price_unit, status FROM product_supply WHERE id=@id"
-            : "SELECT quantity, 0, price_unit, status FROM purchase_demand WHERE id=@id";
-        var listing = await conn.QuerySingleOrDefaultAsync<(decimal Quantity, decimal Min, string PriceUnit, string Status)>(
+            ? "SELECT quantity, COALESCE(min_order_qty,0), price_unit, status, expire_at FROM product_supply WHERE id=@id"
+            : "SELECT quantity, 0, price_unit, status, expire_at FROM purchase_demand WHERE id=@id";
+        var listing = await conn.QuerySingleOrDefaultAsync<(decimal Quantity, decimal Min, string PriceUnit, string Status, DateTime? ExpireAt)>(
             sql + (tx != null ? " FOR UPDATE" : ""), new { id = supplyId ?? demandId }, tx);
         if (listing == default || listing.Status != "ACTIVE")
             throw new BizException("信息当前不可交易", ErrorCodes.Conflict);
+        // 双保险: 过期挂牌可能尚未被后台置为 EXPIRED, 这里按时间再拦一次
+        if (listing.ExpireAt != null && listing.ExpireAt <= DateTime.Now)
+            throw new BizException("信息已过期, 不可交易", ErrorCodes.Conflict);
         if (quantity < listing.Min || quantity > listing.Quantity)
             throw new BizException("报价数量须满足起订量且不超过发布数量");
         if (priceUnit != listing.PriceUnit) throw new BizException("报价单位必须与发布信息一致");
@@ -192,7 +195,26 @@ public class TradeService
             if (q.Status != "PENDING")
                 throw new BizException("该报价已被处理, 请勿重复操作", ErrorCodes.Conflict);
             await ValidateQuantityAsync(conn, q.SupplyId, q.DemandId, q.Quantity, q.Price, q.PriceUnit, tx);
-            await conn.ExecuteAsync("UPDATE trade_quote SET status='ACCEPTED' WHERE id=@id", new { id = quoteId }, tx);
+            // 预留校验: 库存在下单时才扣减, 若只看挂牌总量, 同一 supply 可被多张报价同时"接受"满量,
+            // 之后只有第一个能下单, 其余永久悬空。这里要求 可售量 - 已接受未成交量 >= 本报价数量。
+            // ValidateQuantityAsync 已对挂牌行加了 FOR UPDATE, 并发接受会在此串行, 无竞态。
+            if (q.SupplyId != null || q.DemandId != null)
+            {
+                var tbl = q.SupplyId != null ? "product_supply" : "purchase_demand";
+                var col = q.SupplyId != null ? "supply_id" : "demand_id";
+                var lid = q.SupplyId ?? q.DemandId;
+                var reserved = await conn.ExecuteScalarAsync<decimal>(
+                    $"SELECT COALESCE(SUM(quantity),0) FROM trade_quote WHERE status='ACCEPTED' AND {col}=@lid AND id<>@id",
+                    new { lid, id = quoteId }, tx);
+                var stock = await conn.ExecuteScalarAsync<decimal>($"SELECT quantity FROM {tbl} WHERE id=@lid", new { lid }, tx);
+                if (stock - reserved < q.Quantity)
+                    throw new BizException("可售数量不足, 已有其他报价占用, 请等待其成交或过期", ErrorCodes.Conflict);
+            }
+            // valid_until: 接受后 N 小时内未下单则视为失效, 由后台任务置 CLOSED
+            var validHours = Math.Max(1, _cfg.GetValue<int?>("Quote:AcceptValidHours") ?? 24);
+            await conn.ExecuteAsync(
+                "UPDATE trade_quote SET status='ACCEPTED', valid_until=DATE_ADD(NOW(3), INTERVAL @h HOUR) WHERE id=@id",
+                new { id = quoteId, h = validHours }, tx);
             tx.Commit();
             var other = isBuyer ? q.SellerId : q.BuyerId;
             await _messages.SendAsync(other, userId, "QUOTE", "报价已被接受", $"报价 #{quoteId} 已被对方接受, 双方可确认条款并创建订单", quoteId);
@@ -257,6 +279,9 @@ public class TradeService
                 if (dupId != null) { tx.Commit(); return await GetOrderByIdAsync(dupId.Value, buyerId); }
             }
             if (q.Status != "ACCEPTED") throw new BizException("报价尚未被双方接受, 不能创建订单", ErrorCodes.Conflict);
+            // 报价有有效期: 接受后长时间未下单会过期, 由后台置 CLOSED; 这里按时间再拦一次, 避免用已失效报价下单
+            var validUntil = await conn.ExecuteScalarAsync<DateTime?>("SELECT valid_until FROM trade_quote WHERE id=@id", new { id = quoteId }, tx);
+            if (validUntil != null && validUntil <= DateTime.Now) throw new BizException("该报价已过期, 请重新报价", ErrorCodes.Conflict);
             // 已有订单的报价防重复下单
             var existing = await conn.ExecuteScalarAsync<long?>("SELECT id FROM trade_order WHERE quote_id=@qid LIMIT 1", new { qid = quoteId }, tx);
             if (existing != null) throw new BizException("该报价已生成订单, 请勿重复提交", ErrorCodes.Conflict);
@@ -513,10 +538,13 @@ public class TradeService
     {
         await conn.ExecuteAsync(
             @"UPDATE product_supply s
-              JOIN trade_order_item i ON i.supply_id = s.id
-              SET s.quantity = s.quantity + i.quantity,
+              SET s.quantity = s.quantity + (
+                    SELECT COALESCE(SUM(i.quantity), 0) FROM trade_order_item i
+                    WHERE i.order_id = @oid AND i.supply_id = s.id),
                   s.status = CASE WHEN s.status = 'SOLD_OUT' THEN 'ACTIVE' ELSE s.status END
-              WHERE i.order_id = @oid", new { oid = orderId }, tx);
+              WHERE s.id IN (
+                    SELECT supply_id FROM trade_order_item
+                    WHERE order_id = @oid AND supply_id IS NOT NULL)", new { oid = orderId }, tx);
     }
 
     /// <summary>

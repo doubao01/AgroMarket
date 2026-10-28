@@ -123,6 +123,18 @@ public class OrderTimeoutWorker : BackgroundService
                 }
             }
 
+            // 顺带把已过期的挂牌置为 EXPIRED: expire_at 此前只用于发报警, 没有任何任务改状态,
+            // 导致过期挂牌仍可按 status=ACTIVE 被报价/下单。demand 同构。
+            var expired = await conn.ExecuteAsync(
+                "UPDATE product_supply SET status='EXPIRED' WHERE status='ACTIVE' AND expire_at IS NOT NULL AND expire_at < NOW(3)")
+                + await conn.ExecuteAsync(
+                "UPDATE purchase_demand SET status='EXPIRED' WHERE status='ACTIVE' AND expire_at IS NOT NULL AND expire_at < NOW(3)");
+            if (expired > 0) _logger.LogInformation("listing auto-expired count={Count}", expired);
+            // 已接受但未下单的报价过期后置 CLOSED, 释放其占用的可售量(基于 reserved 计算口径)
+            var closedQuotes = await conn.ExecuteAsync(
+                "UPDATE trade_quote SET status='CLOSED' WHERE status='ACCEPTED' AND valid_until IS NOT NULL AND valid_until < NOW(3)");
+            if (closedQuotes > 0) _logger.LogInformation("quote auto-closed count={Count}", closedQuotes);
+
             if (closed > 0)
                 _logger.LogInformation("order timeout closed={Closed} elapsed={Elapsed}ms", closed, sw.ElapsedMilliseconds);
             return (closed, false);

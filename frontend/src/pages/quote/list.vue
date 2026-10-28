@@ -49,7 +49,7 @@ export default {
     },
     goDetail(id) { uni.navigateTo({ url: '/pages/quote/detail?id=' + id }) },
     statusText(s) {
-      return { PENDING: '待回复', NEGOTIATED: '已还价', ACCEPTED: '已接受', REJECTED: '已拒绝', DEALED: '已成交' }[s] || s
+      return { PENDING: '待回复', NEGOTIATED: '已还价', ACCEPTED: '已接受', REJECTED: '已拒绝', DEALED: '已成交', CLOSED: '已关闭' }[s] || s
     },
     fmtTime(t) { return (t || '').replace('T', ' ').slice(0, 16) },
   },
