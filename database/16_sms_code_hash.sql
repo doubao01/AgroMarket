@@ -8,5 +8,7 @@
 --
 -- 注意: 迁移前已入库的明文验证码无法再通过校验, 但它们最长 10 分钟即过期,
 -- 无需清理; 升级期正在登录的用户重发一次即可。
+USE agro_market;
+
 ALTER TABLE sys_sms_code
   MODIFY COLUMN code VARCHAR(64) NOT NULL COMMENT '验证码 HMAC-SHA256 摘要(不存明文)';

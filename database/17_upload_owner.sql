@@ -4,6 +4,8 @@
 -- 管理端回显资质材料), 既无法判断它属于谁, 也无法在用户更换头像/删除账号时安全清理,
 -- 更不能给"删除自己的文件"提供授权依据(没有归属就只剩"谁都能删"或"谁都删不了")。
 -- 这里只登记元信息, 不存文件本身; 唯一键 url 保证同一地址不会被重复登记。
+USE agro_market;
+
 CREATE TABLE IF NOT EXISTS sys_upload (
   id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   user_id    BIGINT UNSIGNED NOT NULL COMMENT '上传者',

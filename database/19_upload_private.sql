@@ -5,5 +5,14 @@
 -- 现在私有文件落在 uploads/.private/ 下(静态服务对该前缀判不存在),
 -- 对外只给 /api/files/private/... 的 10 分钟签名地址。
 -- is_private 用于: 1) 记录归属与用途; 2) 历史文件搬迁时识别哪些需要搬。
-ALTER TABLE sys_upload
-  ADD COLUMN is_private TINYINT NOT NULL DEFAULT 0 COMMENT '1=私有(证件材料), 只能凭签名地址访问';
+--
+-- 兼容 MySQL 8 / MariaDB, 幂等可重复执行。
+USE agro_market;
+
+SET @sql = (
+  SELECT IF(
+    (SELECT COUNT(*) FROM information_schema.columns
+      WHERE table_schema = DATABASE() AND table_name = 'sys_upload' AND column_name = 'is_private') = 0,
+    'ALTER TABLE sys_upload ADD COLUMN is_private TINYINT NOT NULL DEFAULT 0 COMMENT ''1=私有(证件材料), 只能凭签名地址访问''',
+    'DO 0'));
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

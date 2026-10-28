@@ -6,6 +6,8 @@
 -- retention_setting 与 fed_setting 同构: 只存"覆盖值", 未写入的表项
 -- 回落到代码默认值 (RetentionSettings.Defaults)。迁移写入的是当前默认值,
 -- 管理员在后台改数字仅更新本表, 无需重启。
+USE agro_market;
+
 CREATE TABLE IF NOT EXISTS retention_setting (
   setting_key   VARCHAR(64)  NOT NULL COMMENT '设置项: Enabled/ChatMessageDays/NotificationDays/OperationLogDays/FederationDays/SmsCodeDays',
   setting_value VARCHAR(512) NULL     COMMENT '设置值(字符串)',
