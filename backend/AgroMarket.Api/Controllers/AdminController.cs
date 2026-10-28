@@ -166,6 +166,26 @@ public class AdminController : ControllerBase
         return Ok(ApiResponse<object>.Ok(new { closed }, $"已关闭 {closed} 个超时订单"));
     }
 
+    /// <summary>读取数据留存设置(生效值, 含后台覆盖/默认来源)。</summary>
+    [HttpGet("settings/retention")]
+    public ActionResult<ApiResponse<Dictionary<string, string>>> GetRetentionSettings()
+    {
+        var s = HttpContext.RequestServices.GetRequiredService<AgroMarket.Api.Notifications.RetentionSettings>();
+        return Ok(ApiResponse<Dictionary<string, string>>.Ok(s.Snapshot()));
+    }
+
+    /// <summary>
+    /// 更新数据留存设置。null/空串 表示清除后台覆盖回退默认;
+    /// 数字类键 0 表示该类数据不清理。写入即时生效(Worker 下轮读取), 无需重启。
+    /// </summary>
+    [HttpPut("settings/retention")]
+    public ActionResult<ApiResponse<Dictionary<string, string>>> UpdateRetentionSettings([FromBody] Dictionary<string, string?> values)
+    {
+        var s = HttpContext.RequestServices.GetRequiredService<AgroMarket.Api.Notifications.RetentionSettings>();
+        s.Update(values);
+        return Ok(ApiResponse<Dictionary<string, string>>.Ok(s.Snapshot(), "已保存"));
+    }
+
     public record RemarkRequest(string? Remark);
     public record RegionCreateRequest(string Code, string Name, long? ParentId, int Level);
     public record RegionRenameRequest(string Name);

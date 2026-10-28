@@ -16,19 +16,19 @@ namespace AgroMarket.Api.Notifications;
 public class RetentionWorker : BackgroundService
 {
     private readonly IDbConnectionFactory _db;
-    private readonly IConfiguration _cfg;
+    private readonly RetentionSettings _settings;
     private readonly ILogger<RetentionWorker> _logger;
 
-    public RetentionWorker(IDbConnectionFactory db, IConfiguration cfg, ILogger<RetentionWorker> logger)
+    public RetentionWorker(IDbConnectionFactory db, RetentionSettings settings, ILogger<RetentionWorker> logger)
     {
-        _db = db; _cfg = cfg; _logger = logger;
+        _db = db; _settings = settings; _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        if (!_cfg.GetValue("Retention:Enabled", false))
+        if (!_settings.Enabled)
         {
-            _logger.LogInformation("[留存] 未启用 (Retention:Enabled=false), 不做任何清理");
+            _logger.LogInformation("[留存] 未启用 (后台设置 Enabled=0), 不做任何清理");
             return;
         }
 
@@ -54,15 +54,14 @@ public class RetentionWorker : BackgroundService
         using var conn = _db.Create();
         var total = 0;
         // 分批删: 一次 DELETE 几十万行会长时间持锁, 影响线上读写
-        total += await DeleteOlderThanAsync(conn, "chat_message", "created_at", Days("ChatMessageDays"), ct);
-        total += await DeleteOlderThanAsync(conn, "user_message", "created_at", Days("NotificationDays"), ct);
-        total += await DeleteOlderThanAsync(conn, "sys_operation_log", "created_at", Days("OperationLogDays"), ct);
-        total += await DeleteOlderThanAsync(conn, "fed_report", "received_at", Days("FederationDays"), ct);
-        total += await DeleteOlderThanAsync(conn, "sys_sms_code", "created_at", Days("SmsCodeDays"), ct);
+        total += await DeleteOlderThanAsync(conn, "chat_message", "created_at", _settings.ChatMessageDays, ct);
+        total += await DeleteOlderThanAsync(conn, "user_message", "created_at", _settings.NotificationDays, ct);
+        total += await DeleteOlderThanAsync(conn, "sys_operation_log", "created_at", _settings.OperationLogDays, ct);
+        total += await DeleteOlderThanAsync(conn, "fed_report", "received_at", _settings.FederationDays, ct);
+        total += await DeleteOlderThanAsync(conn, "sys_sms_code", "created_at", _settings.SmsCodeDays, ct);
         if (total > 0) _logger.LogInformation("[留存] 本轮清理 {Count} 行", total);
     }
 
-    private int Days(string key) => _cfg.GetValue("Retention:" + key, 0);
 
     private async Task<int> DeleteOlderThanAsync(
         System.Data.IDbConnection conn, string table, string timeColumn, int days, CancellationToken ct)
