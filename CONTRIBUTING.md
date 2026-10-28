@@ -60,6 +60,10 @@ dotnet run --project backend/AgroMarket.Tests -- http://127.0.0.1:8080
 ```
 
 - 失败会返回非零退出码，可直接用于 CI。
+- **必须先按上文生成 `appsettings.Development.json`**：测试覆盖联动模块，
+  依赖其中的 `Federation:Enabled` / `NodeCode` / `ForwardReceived` / `AcceptForwarded` 等项。
+  缺这个文件时会回落到 `appsettings.json`（`Federation:Enabled=false`），
+  联动相关的用例会失败——这不是代码缺陷，是配置缺失。
 - 其中 AI E2E 段会自行拉起独立 API 实例 + 内置 Mock LLM。
   该段依赖 `AgroMarket.Api/bin/Debug/net10.0/AgroMarket.Api.dll`，
   因此**请用 Debug 构建**，否则这一整段会被 SKIP（测试仍会「通过」，但少测一大块）。

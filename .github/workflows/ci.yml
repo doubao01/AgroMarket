@@ -34,15 +34,15 @@ jobs:
 
     # 仅用于 CI 的一次性配置。生产/部署请按 README 与 .env.example 自行生成。
     # 注意: 这些值通过环境变量下发, 会被子进程继承 —— 测试套件会用它们拉起独立的 API 实例。
+    #
+    # 这里只覆盖「与 CI 环境相关」的少数项(连接串、JWT 密钥); 其余非机密配置
+    # (Sms/Payment/Ai/Federation) 一律取自 appsettings.Development.json.example。
+    # 不要在此逐项列举它们: 否则模板新增配置项时 CI 会静默漏配 —— 本项目就曾因
+    # 漏配 Federation:ForwardReceived / AcceptForwarded 而导致联动用例失败。
     env:
       ASPNETCORE_ENVIRONMENT: Development
       ConnectionStrings__Default: "Server=127.0.0.1;Port=3306;Database=agro_market;User=root;Password=ci-root-pw;DefaultCommandTimeout=30;"
       Jwt__SecretKey: "ci-only-jwt-secret-key-not-for-production-0123456789"
-      Sms__DevMode: "true"
-      Sms__Provider: "Mock"
-      Payment__MockEnabled: "true"
-      Ai__Enabled: "true"
-      Ai__ApiKey: "ci-placeholder-never-called"
 
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +64,12 @@ jobs:
           DB_PASS: ci-root-pw
           SEED_DEMO: "1"
         run: ./database/init-db.sh
+
+      # 采用与 CONTRIBUTING 完全相同的开发者流程生成配置, 保证「按文档搭建 = 测试全绿」。
+      # 集成测试覆盖联动模块, 需要 Federation:Enabled/NodeCode 等项, 这些都在模板里。
+      # 环境变量优先级高于本文件, 故上面的 CI 连接串等仍会生效。
+      - name: 生成开发配置(同 CONTRIBUTING 的模板流程)
+        run: cp backend/AgroMarket.Api/appsettings.Development.json.example backend/AgroMarket.Api/appsettings.Development.json
 
       # 必须构建 Debug: 测试套件的 AI E2E 段会探测 Api/bin/Debug/net10.0/AgroMarket.Api.dll,
       # 找不到就整段 SKIP —— CI 会"通过"但少测一大块。

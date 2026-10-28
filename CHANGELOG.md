@@ -37,7 +37,9 @@
 
 - `LICENSE`：Apache License 2.0。
 - CI（`.github/workflows/ci.yml`）：起 MariaDB 服务、跑全部迁移、启动 API、执行集成测试；
-  另含前端 H5 构建任务。
+  另含前端 H5 构建任务。配置来源改为复用 `appsettings.Development.json.example`
+  （与 `CONTRIBUTING.md` 的开发者流程一致），只由环境变量覆盖连接串等环境相关项，
+  避免 CI 逐项列举配置而与模板漂移。
 - `CONTRIBUTING.md`、`SECURITY.md`、`.editorconfig`、`backend/AgroMarket.slnx`。
 - `docs/`：迁入原 `.monkeycode/docs/` 下的设计文档（聊天 ADR、AI 大屏、联邦设计与部署）。
 
