@@ -247,6 +247,15 @@ public class TradeService
                 new { id = quoteId }, tx);
             if (q == default) throw new BizException("报价不存在", ErrorCodes.NotFound);
             if (q.BuyerId != buyerId) throw new BizException("只有买方可以确认下单", ErrorCodes.Forbidden);
+            // 幂等须先于状态校验: 重复提交时报价早已 DEALED, 若先查状态会被"尚未被接受"挡掉, 幂等就失效了。
+            var clientOrderId = string.IsNullOrWhiteSpace(req.ClientOrderId) ? null : req.ClientOrderId.Trim();
+            if (clientOrderId != null)
+            {
+                var dupId = await conn.ExecuteScalarAsync<long?>(
+                    "SELECT id FROM trade_order WHERE buyer_id=@b AND client_order_id=@c LIMIT 1",
+                    new { b = buyerId, c = clientOrderId }, tx);
+                if (dupId != null) { tx.Commit(); return await GetOrderByIdAsync(dupId.Value, buyerId); }
+            }
             if (q.Status != "ACCEPTED") throw new BizException("报价尚未被双方接受, 不能创建订单", ErrorCodes.Conflict);
             // 已有订单的报价防重复下单
             var existing = await conn.ExecuteScalarAsync<long?>("SELECT id FROM trade_order WHERE quote_id=@qid LIMIT 1", new { qid = quoteId }, tx);
@@ -288,9 +297,9 @@ public class TradeService
             var total = decimal.Round(q.Price * q.Quantity, 2);
             var orderNo = "O" + Guid.NewGuid().ToString("N")[..31];
             var orderId = await conn.ExecuteScalarAsync<long>(@"
-                INSERT INTO trade_order (order_no, quote_id, buyer_id, seller_id, total_amount, status, delivery_mode, address_snapshot, remark, is_demo)
-                VALUES (@no, @qid, @b, @s, @amt, 'PENDING_CONFIRM', @dm, @addr, @remark, @demo); SELECT LAST_INSERT_ID();",
-                new { no = orderNo, qid = quoteId, b = q.BuyerId, s = q.SellerId, amt = total,
+                INSERT INTO trade_order (order_no, client_order_id, quote_id, buyer_id, seller_id, total_amount, status, delivery_mode, address_snapshot, remark, is_demo)
+                VALUES (@no, @coid, @qid, @b, @s, @amt, 'PENDING_CONFIRM', @dm, @addr, @remark, @demo); SELECT LAST_INSERT_ID();",
+                new { no = orderNo, coid = clientOrderId, qid = quoteId, b = q.BuyerId, s = q.SellerId, amt = total,
                     dm = req.DeliveryMode, addr = req.AddressSnapshot, remark = req.Remark, demo = _isDemo }, tx);
             // 订单明细快照: 保存成交时商品名称/规格/价格/数量
             await conn.ExecuteAsync(@"
@@ -320,12 +329,25 @@ public class TradeService
     /// </summary>
     public async Task<Dtos.OrderDto> CreateDirectOrderAsync(long buyerId,
         long? supplyId, long? demandId, decimal price, string priceUnit, decimal quantity,
-        string? deliveryMode, string? addressSnapshot, string? remark, long? conversationId = null)
+        string? deliveryMode, string? addressSnapshot, string? remark, long? conversationId = null,
+        string? clientOrderId = null)
     {
         if (price <= 0) throw new BizException("成交单价必须大于 0");
         if (quantity <= 0) throw new BizException("成交数量必须大于 0");
         if (supplyId == null && demandId == null) throw new BizException("必须指定供应商品或采购需求");
         if (supplyId != null && demandId != null) throw new BizException("只能指定供应商品或采购需求其一");
+
+        // 幂等前置查重: 直购每次会先建一条 ACCEPTED 报价, 若命中幂等键却在建 quote 之后才发现,
+        // 会给重复请求留下一条悬空报价。这里在源头就拦住 —— 已建过订单直接返回, 不建新 quote。
+        var coid = string.IsNullOrWhiteSpace(clientOrderId) ? null : clientOrderId.Trim();
+        if (coid != null)
+        {
+            using var chk = _db.Create();
+            var dupId = await chk.ExecuteScalarAsync<long?>(
+                "SELECT id FROM trade_order WHERE buyer_id=@b AND client_order_id=@c LIMIT 1",
+                new { b = buyerId, c = coid });
+            if (dupId != null) return await GetOrderByIdAsync(dupId.Value, buyerId);
+        }
 
         long sellerId;
         using (var conn = _db.Create())
@@ -374,7 +396,7 @@ public class TradeService
         }
 
         return await CreateOrderFromQuoteAsync(buyerId, quoteId,
-            new Dtos.OrderCreateFromQuoteRequest(deliveryMode, addressSnapshot, remark));
+            new Dtos.OrderCreateFromQuoteRequest(deliveryMode, addressSnapshot, remark, clientOrderId));
     }
 
     /// <summary>按报价ID查询其关联的会话ID (无则返回 null)。</summary>

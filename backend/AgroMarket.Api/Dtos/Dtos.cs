@@ -122,7 +122,7 @@ public record StatusLogDto
     public string? Note { get; set; }
     public DateTime CreatedAt { get; set; }
 }
-public record OrderCreateFromQuoteRequest(string? DeliveryMode, string? AddressSnapshot, string? Remark);
+public record OrderCreateFromQuoteRequest(string? DeliveryMode, string? AddressSnapshot, string? Remark, string? ClientOrderId = null);
 public record OrderStatusRequest(string? Status, string? Reason, string? Note);
 
 // ---------- 收藏 / 消息 / 举报 / 公告 / 地址 ----------

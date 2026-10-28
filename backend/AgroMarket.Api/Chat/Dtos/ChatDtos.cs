@@ -39,10 +39,10 @@ public record ShareProductRequest(long? SupplyId, long? DemandId);
 public record ChatQuoteRequest(
     long? SupplyId, long? DemandId, decimal Price, string PriceUnit, decimal Quantity, string? Remark);
 
-/// <summary>从聊天直接下单 (自动生成已接受报价)。</summary>
+/// <summary>从聊天直接下单 (自动生成已接受报价)。ClientOrderId 为幂等键, 重复提交只生成一张订单。</summary>
 public record ChatOrderRequest(
     long? SupplyId, long? DemandId, decimal Price, string PriceUnit, decimal Quantity,
-    string? DeliveryMode, string? AddressSnapshot, string? Remark);
+    string? DeliveryMode, string? AddressSnapshot, string? Remark, string? ClientOrderId = null);
 
 /// <summary>会话内还价 (生成新报价, 复用原会话)。</summary>
 public record ChatQuoteCounterRequest(decimal Price, decimal? Quantity, string? Remark);

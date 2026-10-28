@@ -163,7 +163,7 @@ public class ChatTradeService
         await EnsureListingBelongsToPeerAsync(peerId, req.SupplyId, req.DemandId);
         var order = await _trade.CreateDirectOrderAsync(userId,
             req.SupplyId, req.DemandId, req.Price, req.PriceUnit, req.Quantity,
-            req.DeliveryMode, req.AddressSnapshot, req.Remark, convId);
+            req.DeliveryMode, req.AddressSnapshot, req.Remark, convId, req.ClientOrderId);
 
         var payload = new
         {
